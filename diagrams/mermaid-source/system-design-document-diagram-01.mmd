@@ -1,9 +1,10 @@
 flowchart TB
     subgraph cluster_1_Site_Site_A["Site A"]
-        subgraph cluster_2_Site_AM["mgmt-cluster Cluster"]
+        subgraph cluster_2_Site_AM["Management Cluster"]
             Site_AM_ISTIO["Istio Control Plane"]
             Site_AM_PROM["Prometheus Stack<br/>Central Monitoring"]
             Site_AM_MONGO["MongoDB Operator"]
+            Site_AM_MONGO_OPS["MongoDB OpsManager"]
             Site_AM_GRAFANA["Grafana Dashboard"]
             Site_AM_ALERT["Alertmanager"]
             Site_AM_ISTIO["Istio Control Plane"]
@@ -12,7 +13,7 @@ flowchart TB
             Site_AM_GRAFANA["Grafana Dashboard"]
             Site_AM_ALERT["Alertmanager"]
         end
-        subgraph cluster_3_Site_AD["app-cluster-a Cluster"]
+        subgraph cluster_3_Site_AD["App Cluster"]
             Site_AD_ISTIO["Istio Control Plane"]
             Site_AD_PROM["Prometheus Agent"]
             Site_AD_ROCKET["Rocket.Chat Pods"]
@@ -24,7 +25,7 @@ flowchart TB
         end
     end
     subgraph cluster_4_Site_Site_B["Site B"]
-        subgraph cluster_5_Site_BD["app-cluster-b Cluster"]
+        subgraph cluster_5_Site_BD["App Cluster"]
             Site_BD_ISTIO["Istio Control Plane"]
             Site_BD_PROM["Prometheus Agent"]
             Site_BD_ROCKET["Rocket.Chat Pods"]
@@ -36,7 +37,7 @@ flowchart TB
         end
     end
     subgraph cluster_6_Site_Site_C["Site C"]
-        subgraph cluster_7_Site_CD["app-cluster-c Cluster"]
+        subgraph cluster_7_Site_CD["App Cluster"]
             Site_CD_ISTIO["Istio Control Plane"]
             Site_CD_PROM["Prometheus Agent"]
             Site_CD_ROCKET["Rocket.Chat Pods"]
@@ -47,16 +48,14 @@ flowchart TB
             Site_CD_MONGO["MongoDB ReplicaSet"]
         end
     end
-    subgraph cluster_8_External["External Services"]
-        REGISTRY["Container Registry<br/>registry.example.internal:8443"]
-        STORAGE["NetApp Storage<br/>storage.example.internal"]
+    subgraph cluster_8_External["<br/><br/><br/><br/><br/><br/>External Services"]
         REGISTRY["Container Registry<br/>registry.example.internal:8443"]
         STORAGE["NetApp Storage<br/>storage.example.internal"]
     end
-    Site_AM["Site AM"]
-    Site_AD["Site AD"]
-    Site_BD["Site BD"]
-    Site_CD["Site CD"]
+    Site_AM["Site A Management<br/>Cluster"]
+    Site_AD["Site A Domain<br/>Cluster"]
+    Site_BD["Site B Domain<br/>Cluster"]
+    Site_CD["Site C Domain<br/>Cluster"]
     Site_AM_PROM -.Remote Write.-> Site_AD_PROM
     Site_AM_PROM -.Remote Write.-> Site_BD_PROM
     Site_AM_PROM -.Remote Write.-> Site_CD_PROM

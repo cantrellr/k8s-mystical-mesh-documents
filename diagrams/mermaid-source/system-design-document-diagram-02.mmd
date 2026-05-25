@@ -41,12 +41,15 @@ flowchart TB
         NATS["NATS Cluster<br/>Messaging"]
         RocketChat["Rocket.Chat<br/>Microservices"]
     end
-    CoreInfra["CoreInfra"]
-    ServiceMesh["ServiceMesh"]
-    AppPlatform["AppPlatform"]
+
+    subgraph realm_2_MonitoringComponents[" "]
+    CoreInfra["Core Infrastructure"]
+    ServiceMesh["Service Mesh"]
+    AppPlatform["Application Platform"]
     Monitoring["Monitoring"]
+    end
+    Monitoring -.Scrapes1.-> CoreInfra
+    Monitoring -.Scrapes2.-> ServiceMesh
+    Monitoring -.Scrapes3.-> AppPlatform
     CoreInfra --> ServiceMesh
     ServiceMesh --> AppPlatform
-    Monitoring -.Scrapes.-> CoreInfra
-    Monitoring -.Scrapes.-> ServiceMesh
-    Monitoring -.Scrapes.-> AppPlatform
