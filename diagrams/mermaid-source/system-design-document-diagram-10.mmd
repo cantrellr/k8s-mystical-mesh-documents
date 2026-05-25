@@ -1,0 +1,41 @@
+flowchart LR
+    subgraph cluster_1_External["External Access"]
+        Users["Users"]
+        Users["Users"]
+    end
+    subgraph cluster_2_Ingress["Ingress Layer"]
+        Contour["Contour Ingress"]
+        Contour["Contour Ingress"]
+    end
+    subgraph cluster_3_RocketChat["Rocket.Chat Pods"]
+        RC1["Rocket.Chat Pod 1"]
+        RC2["Rocket.Chat Pod 2"]
+        RC3["Rocket.Chat Pod 3"]
+        RC1["Rocket.Chat Pod 1"]
+        RC2["Rocket.Chat Pod 2"]
+        RC3["Rocket.Chat Pod 3"]
+    end
+    subgraph cluster_4_Microservices["Microservice Pods"]
+        Presence1["Presence Service 1"]
+        Presence2["Presence Service 2"]
+        Presence1["Presence Service 1"]
+        Presence2["Presence Service 2"]
+    end
+    subgraph cluster_5_Backend["Backend Services"]
+        MongoDB[("MongoDB<br/>ReplicaSet")]
+        NATS["NATS Cluster"]
+        MongoDB[("MongoDB<br/>ReplicaSet")]
+        NATS["NATS Cluster"]
+    end
+    Users --> Contour
+    Contour --> RC1
+    Contour --> RC2
+    Contour --> RC3
+    RC1 --> Presence1
+    RC2 --> Presence1
+    RC3 --> Presence2
+    RC1 --> MongoDB
+    RC2 --> MongoDB
+    RC3 --> MongoDB
+    Presence1 --> NATS
+    Presence2 --> NATS

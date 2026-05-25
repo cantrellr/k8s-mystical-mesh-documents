@@ -1,0 +1,29 @@
+flowchart TB
+    Start(["Start Deployment"])
+    Core["core: DNS, cert-manager, MetalLB, Trident"]
+    Ingress["realms/platform-ingress: platform-ingress + restricted-ingress ingress planes"]
+    Istio["istio: mesh install + multicluster secrets"]
+    Monitoring["monitoring: Grafana PostgreSQL, Prometheus, Alertmanager, Kiali access"]
+    Data["realms/platform-ingress/rocketchat/mongodb: MongoDB platform"]
+    NATS["realms/platform-ingress/rocketchat: NATS"]
+    RocketChat["realms/platform-ingress/rocketchat: Rocket.Chat"]
+    Identity["realms/*/keycloak: Keycloak realms"]
+    Security["stigs/deploy-security-hardening.sh"]
+    OpsTools["misc: Chrony DaemonSet + Toolbox"]
+    Complete(["Deployment Complete"])
+    Start --> Core
+    Core --> Ingress
+    Ingress --> Istio
+    Istio --> Monitoring
+    Monitoring --> Data
+    Data --> NATS
+    NATS --> RocketChat
+    RocketChat --> Identity
+    Identity --> Security
+    Security --> OpsTools
+    OpsTools --> Complete
+    style Start fill:#c8e6c9
+    style Complete fill:#c8e6c9
+    style Istio fill:#e1f5ff
+    style Monitoring fill:#fff9c4
+    style Security fill:#ffcdd2

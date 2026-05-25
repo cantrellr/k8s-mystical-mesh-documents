@@ -1,0 +1,37 @@
+flowchart TB
+    subgraph cluster_1_Operator["MongoDB Operator - mgmt-cluster"]
+        MongoOp["MongoDB Kubernetes Operator<br/>v1.5.0"]
+        OpConfig["Multi-cluster Configuration"]
+        MongoOp["MongoDB Kubernetes Operator<br/>v1.5.0"]
+        OpConfig["Multi-cluster Configuration"]
+    end
+    subgraph cluster_2_Site_AD_DB["app-cluster-a MongoDB"]
+        Site_AD_RS["ReplicaSet Member 1"]
+        Site_AD_RS["ReplicaSet Member 1"]
+    end
+    subgraph cluster_3_Site_BD_DB["app-cluster-b MongoDB"]
+        Site_BD_RS["ReplicaSet Member 2"]
+        Site_BD_RS["ReplicaSet Member 2"]
+    end
+    subgraph cluster_4_Site_CD_DB["app-cluster-c MongoDB"]
+        Site_CD_RS["ReplicaSet Member 3"]
+        Site_CD_RS["ReplicaSet Member 3"]
+    end
+    subgraph cluster_5_Apps["Application Layer"]
+        RC_Site_A["Rocket.Chat<br/>app-cluster-a"]
+        RC_Site_B["Rocket.Chat<br/>app-cluster-b"]
+        RC_Site_C["Rocket.Chat<br/>app-cluster-c"]
+        RC_Site_A["Rocket.Chat<br/>app-cluster-a"]
+        RC_Site_B["Rocket.Chat<br/>app-cluster-b"]
+        RC_Site_C["Rocket.Chat<br/>app-cluster-c"]
+    end
+    MongoOp -.Manages.-> Site_AD_RS
+    MongoOp -.Manages.-> Site_BD_RS
+    MongoOp -.Manages.-> Site_CD_RS
+    Site_AD_RS <-.Replication.-> Site_BD_RS
+    Site_AD_RS <-.Replication.-> Site_CD_RS
+    Site_BD_RS <-.Replication.-> Site_CD_RS
+    RC_Site_A --> Site_AD_RS
+    RC_Site_B --> Site_BD_RS
+    RC_Site_C --> Site_CD_RS
+    style MongoOp fill:#c8e6c9

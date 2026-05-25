@@ -1,0 +1,78 @@
+flowchart TB
+    subgraph cluster_1_Site_Site_A["Site A"]
+        subgraph cluster_2_Site_AM["mgmt-cluster Cluster"]
+            Site_AM_ISTIO["Istio Control Plane"]
+            Site_AM_PROM["Prometheus Stack<br/>Central Monitoring"]
+            Site_AM_MONGO["MongoDB Operator"]
+            Site_AM_GRAFANA["Grafana Dashboard"]
+            Site_AM_ALERT["Alertmanager"]
+            Site_AM_ISTIO["Istio Control Plane"]
+            Site_AM_PROM["Prometheus Stack<br/>Central Monitoring"]
+            Site_AM_MONGO["MongoDB Operator"]
+            Site_AM_GRAFANA["Grafana Dashboard"]
+            Site_AM_ALERT["Alertmanager"]
+        end
+        subgraph cluster_3_Site_AD["app-cluster-a Cluster"]
+            Site_AD_ISTIO["Istio Control Plane"]
+            Site_AD_PROM["Prometheus Agent"]
+            Site_AD_ROCKET["Rocket.Chat Pods"]
+            Site_AD_MONGO["MongoDB ReplicaSet"]
+            Site_AD_ISTIO["Istio Control Plane"]
+            Site_AD_PROM["Prometheus Agent"]
+            Site_AD_ROCKET["Rocket.Chat Pods"]
+            Site_AD_MONGO["MongoDB ReplicaSet"]
+        end
+    end
+    subgraph cluster_4_Site_Site_B["Site B"]
+        subgraph cluster_5_Site_BD["app-cluster-b Cluster"]
+            Site_BD_ISTIO["Istio Control Plane"]
+            Site_BD_PROM["Prometheus Agent"]
+            Site_BD_ROCKET["Rocket.Chat Pods"]
+            Site_BD_MONGO["MongoDB ReplicaSet"]
+            Site_BD_ISTIO["Istio Control Plane"]
+            Site_BD_PROM["Prometheus Agent"]
+            Site_BD_ROCKET["Rocket.Chat Pods"]
+            Site_BD_MONGO["MongoDB ReplicaSet"]
+        end
+    end
+    subgraph cluster_6_Site_Site_C["Site C"]
+        subgraph cluster_7_Site_CD["app-cluster-c Cluster"]
+            Site_CD_ISTIO["Istio Control Plane"]
+            Site_CD_PROM["Prometheus Agent"]
+            Site_CD_ROCKET["Rocket.Chat Pods"]
+            Site_CD_MONGO["MongoDB ReplicaSet"]
+            Site_CD_ISTIO["Istio Control Plane"]
+            Site_CD_PROM["Prometheus Agent"]
+            Site_CD_ROCKET["Rocket.Chat Pods"]
+            Site_CD_MONGO["MongoDB ReplicaSet"]
+        end
+    end
+    subgraph cluster_8_External["External Services"]
+        REGISTRY["Container Registry<br/>registry.example.internal:8443"]
+        STORAGE["NetApp Storage<br/>storage.example.internal"]
+        REGISTRY["Container Registry<br/>registry.example.internal:8443"]
+        STORAGE["NetApp Storage<br/>storage.example.internal"]
+    end
+    Site_AM["Site AM"]
+    Site_AD["Site AD"]
+    Site_BD["Site BD"]
+    Site_CD["Site CD"]
+    Site_AM_PROM -.Remote Write.-> Site_AD_PROM
+    Site_AM_PROM -.Remote Write.-> Site_BD_PROM
+    Site_AM_PROM -.Remote Write.-> Site_CD_PROM
+    Site_AM_ISTIO <-.Service Mesh.-> Site_AD_ISTIO
+    Site_AM_ISTIO <-.Service Mesh.-> Site_BD_ISTIO
+    Site_AM_ISTIO <-.Service Mesh.-> Site_CD_ISTIO
+    Site_AD_MONGO <-.Replication.-> Site_BD_MONGO
+    Site_AD_MONGO <-.Replication.-> Site_CD_MONGO
+    Site_BD_MONGO <-.Replication.-> Site_CD_MONGO
+    Site_AM --> REGISTRY
+    Site_AD --> REGISTRY
+    Site_BD --> REGISTRY
+    Site_CD --> REGISTRY
+    Site_AM --> STORAGE
+    Site_AD --> STORAGE
+    Site_BD --> STORAGE
+    Site_CD --> STORAGE
+    style REGISTRY fill:#ffebee
+    style STORAGE fill:#ffebee

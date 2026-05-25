@@ -1,0 +1,31 @@
+flowchart TB
+    subgraph cluster_1_PKI["PKI Infrastructure"]
+        RootCA["Root CA Secret<br/>platform-ca-secret-v1"]
+        ClusterIssuer["ClusterIssuer<br/>platform-ca-clusterissuer"]
+        RootCA["Root CA Secret<br/>platform-ca-secret-v1"]
+        ClusterIssuer["ClusterIssuer<br/>platform-ca-clusterissuer"]
+    end
+    subgraph cluster_2_CertMgr["cert-manager Components"]
+        Controller["cert-manager Controller"]
+        Webhook["cert-manager Webhook"]
+        CAInjector["CA Injector"]
+        Controller["cert-manager Controller"]
+        Webhook["cert-manager Webhook"]
+        CAInjector["CA Injector"]
+    end
+    subgraph cluster_3_Services["Service Certificates"]
+        IstioCerts["Istio CA Certificates<br/>Per Cluster"]
+        MongoDBCerts["MongoDB TLS Certificates"]
+        GrafanaCerts["Grafana TLS"]
+        IstioCerts["Istio CA Certificates<br/>Per Cluster"]
+        MongoDBCerts["MongoDB TLS Certificates"]
+        GrafanaCerts["Grafana TLS"]
+    end
+    Services["Services"]
+    RootCA --> ClusterIssuer
+    ClusterIssuer --> Controller
+    Controller --> IstioCerts
+    Controller --> MongoDBCerts
+    Controller --> GrafanaCerts
+    Webhook -.Validates.-> Controller
+    CAInjector -.Injects.-> Services

@@ -1,0 +1,80 @@
+flowchart TB
+    subgraph cluster_1_Central["Central Monitoring - mgmt-cluster"]
+        Prom_Central["Prometheus<br/>Central Federation"]
+        Grafana["Grafana Dashboards"]
+        Alert["Alertmanager"]
+        KubeSM["kube-state-metrics"]
+        NodeExp["node-exporter"]
+        Prom_Central["Prometheus<br/>Central Federation"]
+        Grafana["Grafana Dashboards"]
+        Alert["Alertmanager"]
+        KubeSM["kube-state-metrics"]
+        NodeExp["node-exporter"]
+    end
+    subgraph cluster_2_Agents["Remote Clusters"]
+        Prom_Site_AD["Prometheus<br/>app-cluster-a"]
+        Prom_Site_BD["Prometheus<br/>app-cluster-b"]
+        Prom_Site_CD["Prometheus<br/>app-cluster-c"]
+        Prom_Site_AD["Prometheus<br/>app-cluster-a"]
+        Prom_Site_BD["Prometheus<br/>app-cluster-b"]
+        Prom_Site_CD["Prometheus<br/>app-cluster-c"]
+    end
+    subgraph cluster_3_Targets["Monitoring Targets"]
+        subgraph cluster_4_Infra["Infrastructure"]
+            Kubelet["Kubelet/cAdvisor"]
+            CoreDNS["CoreDNS"]
+            CertMgr["cert-manager"]
+            MetalLB["MetalLB"]
+            Contour["Contour"]
+            Kubelet["Kubelet/cAdvisor"]
+            CoreDNS["CoreDNS"]
+            CertMgr["cert-manager"]
+            MetalLB["MetalLB"]
+            Contour["Contour"]
+        end
+        subgraph cluster_5_Mesh["Service Mesh"]
+            Istio["Istio Proxies"]
+            Istio["Istio Proxies"]
+        end
+        subgraph cluster_6_Apps["Applications"]
+            MongoDB["MongoDB Exporters"]
+            NATS["NATS Exporters"]
+            RocketChat["Rocket.Chat Metrics"]
+            MongoDB["MongoDB Exporters"]
+            NATS["NATS Exporters"]
+            RocketChat["Rocket.Chat Metrics"]
+        end
+    end
+    subgraph cluster_7_Dashboards["Grafana Dashboards"]
+        RC_SLO["Rocket.Chat SLO"]
+        Mongo_SLO["MongoDB SLO"]
+        Edge_SLO["Edge SLO"]
+        RC_SLO["Rocket.Chat SLO"]
+        Mongo_SLO["MongoDB SLO"]
+        Edge_SLO["Edge SLO"]
+    end
+    subgraph cluster_8_Alerts["Alert Rules"]
+        Mongo_Alerts["MongoDB Alerts"]
+        RC_Alerts["Rocket.Chat Alerts"]
+        MetalLB_Alerts["MetalLB Alerts"]
+        Mongo_Alerts["MongoDB Alerts"]
+        RC_Alerts["Rocket.Chat Alerts"]
+        MetalLB_Alerts["MetalLB Alerts"]
+    end
+    Infra["Infra"]
+    Mesh["Mesh"]
+    Apps["Apps"]
+    Dashboards["Dashboards"]
+    Alerts["Alerts"]
+    Prom_Site_AD -.Remote Write.-> Prom_Central
+    Prom_Site_BD -.Remote Write.-> Prom_Central
+    Prom_Site_CD -.Remote Write.-> Prom_Central
+    Prom_Central -.Scrapes.-> KubeSM
+    Prom_Central -.Scrapes.-> NodeExp
+    Prom_Central -.Scrapes.-> Infra
+    Prom_Central -.Scrapes.-> Mesh
+    Prom_Central -.Scrapes.-> Apps
+    Prom_Central --> Grafana
+    Prom_Central --> Alert
+    Grafana --> Dashboards
+    Prom_Central --> Alerts

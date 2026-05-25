@@ -1,0 +1,52 @@
+flowchart TB
+    subgraph cluster_1_CoreInfra["Core Infrastructure - All Clusters"]
+        CoreDNS["CoreDNS<br/>DNS Resolution"]
+        CertMgr["cert-manager<br/>Certificate Management"]
+        MetalLB["MetalLB<br/>Load Balancer"]
+        Contour["Contour<br/>Ingress Controller"]
+        Trident["NetApp Trident<br/>Storage Provisioner"]
+        CoreDNS["CoreDNS<br/>DNS Resolution"]
+        CertMgr["cert-manager<br/>Certificate Management"]
+        MetalLB["MetalLB<br/>Load Balancer"]
+        Contour["Contour<br/>Ingress Controller"]
+        Trident["NetApp Trident<br/>Storage Provisioner"]
+    end
+    subgraph cluster_2_ServiceMesh["Service Mesh - All Clusters"]
+        IstioBase["Istio Base"]
+        Istiod["Istiod<br/>Control Plane"]
+        Gateway["East-West Gateway<br/>Multi-cluster Traffic"]
+        Kiali["Kiali<br/>Service Mesh Visualization"]
+        IstioBase["Istio Base"]
+        Istiod["Istiod<br/>Control Plane"]
+        Gateway["East-West Gateway<br/>Multi-cluster Traffic"]
+        Kiali["Kiali<br/>Service Mesh Visualization"]
+    end
+    subgraph cluster_3_Monitoring["Monitoring Stack - mgmt-cluster"]
+        Prometheus["Prometheus"]
+        Grafana["Grafana"]
+        Alertmanager["Alertmanager"]
+        KubeSM["kube-state-metrics"]
+        NodeExp["node-exporter"]
+        Prometheus["Prometheus"]
+        Grafana["Grafana"]
+        Alertmanager["Alertmanager"]
+        KubeSM["kube-state-metrics"]
+        NodeExp["node-exporter"]
+    end
+    subgraph cluster_4_AppPlatform["Application Platform"]
+        MongoDB["MongoDB Operator<br/>Multi-cluster"]
+        NATS["NATS Cluster<br/>Messaging"]
+        RocketChat["Rocket.Chat<br/>Microservices"]
+        MongoDB["MongoDB Operator<br/>Multi-cluster"]
+        NATS["NATS Cluster<br/>Messaging"]
+        RocketChat["Rocket.Chat<br/>Microservices"]
+    end
+    CoreInfra["CoreInfra"]
+    ServiceMesh["ServiceMesh"]
+    AppPlatform["AppPlatform"]
+    Monitoring["Monitoring"]
+    CoreInfra --> ServiceMesh
+    ServiceMesh --> AppPlatform
+    Monitoring -.Scrapes.-> CoreInfra
+    Monitoring -.Scrapes.-> ServiceMesh
+    Monitoring -.Scrapes.-> AppPlatform

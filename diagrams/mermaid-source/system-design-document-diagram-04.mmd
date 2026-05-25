@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph cluster_1_External["External Traffic"]
+        Users["End Users"]
+        Users["End Users"]
+    end
+    subgraph cluster_2_LB["MetalLB Layer 2"]
+        MetalLB_Pool["IP Address Pools<br/>Layer 2 Advertisement"]
+        MetalLB_Pool["IP Address Pools<br/>Layer 2 Advertisement"]
+    end
+    subgraph cluster_3_Ingress["Contour Ingress"]
+        Envoy["Envoy DaemonSet<br/>LoadBalancer Type"]
+        ContourCtrl["Contour Controller"]
+        Envoy["Envoy DaemonSet<br/>LoadBalancer Type"]
+        ContourCtrl["Contour Controller"]
+    end
+    subgraph cluster_4_Mesh["Istio Service Mesh"]
+        EW_GW["East-West Gateway<br/>Cross-cluster Traffic"]
+        Sidecar["Envoy Sidecars<br/>Application Pods"]
+        EW_GW["East-West Gateway<br/>Cross-cluster Traffic"]
+        Sidecar["Envoy Sidecars<br/>Application Pods"]
+    end
+    subgraph cluster_5_Apps["Applications"]
+        RocketChat["Rocket.Chat Service"]
+        MongoDB["MongoDB Service"]
+        NATS["NATS Service"]
+        RocketChat["Rocket.Chat Service"]
+        MongoDB["MongoDB Service"]
+        NATS["NATS Service"]
+    end
+    Users --> MetalLB_Pool
+    MetalLB_Pool --> Envoy
+    Envoy --> ContourCtrl
+    ContourCtrl --> EW_GW
+    EW_GW --> Sidecar
+    Sidecar --> RocketChat
+    Sidecar --> MongoDB
+    Sidecar --> NATS
+    style MetalLB_Pool fill:#ffecb3
+    style Envoy fill:#c5cae9
+    style EW_GW fill:#c5cae9
+    style Sidecar fill:#c5cae9

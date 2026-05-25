@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph cluster_1_MeshConfig["Istio Multi-cluster Mesh"]
+        subgraph cluster_2_Primary["Primary Cluster - mgmt-cluster"]
+            P_Istiod["Istiod<br/>Control Plane"]
+            P_Gateway["East-West Gateway"]
+            P_Kiali["Kiali Server"]
+            P_Istiod["Istiod<br/>Control Plane"]
+            P_Gateway["East-West Gateway"]
+            P_Kiali["Kiali Server"]
+        end
+        subgraph cluster_3_Remote1["Remote - app-cluster-a"]
+            R1_Istiod["Istiod<br/>Control Plane"]
+            R1_Gateway["East-West Gateway"]
+            R1_Istiod["Istiod<br/>Control Plane"]
+            R1_Gateway["East-West Gateway"]
+        end
+        subgraph cluster_4_Remote2["Remote - app-cluster-b"]
+            R2_Istiod["Istiod<br/>Control Plane"]
+            R2_Gateway["East-West Gateway"]
+            R2_Istiod["Istiod<br/>Control Plane"]
+            R2_Gateway["East-West Gateway"]
+        end
+        subgraph cluster_5_Remote3["Remote - app-cluster-c"]
+            R3_Istiod["Istiod<br/>Control Plane"]
+            R3_Gateway["East-West Gateway"]
+            R3_Istiod["Istiod<br/>Control Plane"]
+            R3_Gateway["East-West Gateway"]
+        end
+    end
+    P_Istiod <-.API Access<br/>Remote Secret.-> R1_Istiod
+    P_Istiod <-.API Access<br/>Remote Secret.-> R2_Istiod
+    P_Istiod <-.API Access<br/>Remote Secret.-> R3_Istiod
+    R1_Istiod <-.Mutual<br/>Discovery.-> R2_Istiod
+    R1_Istiod <-.Mutual<br/>Discovery.-> R3_Istiod
+    R2_Istiod <-.Mutual<br/>Discovery.-> R3_Istiod
+    P_Gateway <-.15443.-> R1_Gateway
+    P_Gateway <-.15443.-> R2_Gateway
+    P_Gateway <-.15443.-> R3_Gateway
+    R1_Gateway <-.15443.-> R2_Gateway
+    R1_Gateway <-.15443.-> R3_Gateway
+    R2_Gateway <-.15443.-> R3_Gateway

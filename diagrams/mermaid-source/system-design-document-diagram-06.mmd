@@ -1,0 +1,44 @@
+flowchart TB
+    subgraph cluster_1_Storage["NetApp Storage System"]
+        SVM["Storage Virtual Machine<br/>tridentSVM"]
+        NFS_LIF["NFS Data LIF<br/>storage-data.example.internal"]
+        ISCSI_LIF["iSCSI LIF"]
+        SVM["Storage Virtual Machine<br/>tridentSVM"]
+        NFS_LIF["NFS Data LIF<br/>storage-data.example.internal"]
+        ISCSI_LIF["iSCSI LIF"]
+    end
+    subgraph cluster_2_Trident["Trident Operator"]
+        TridentOp["Trident Operator<br/>v100.2602.0"]
+        NFSBackend["NFS Backend<br/>ontap-nas"]
+        iSCSIBackend["iSCSI Backend<br/>ontap-san"]
+        TridentOp["Trident Operator<br/>v100.2602.0"]
+        NFSBackend["NFS Backend<br/>ontap-nas"]
+        iSCSIBackend["iSCSI Backend<br/>ontap-san"]
+    end
+    subgraph cluster_3_StorageClasses["Storage Classes"]
+        NFSLB["NFS Latebinding<br/>tridentsvm-nfs-latebinding"]
+        ISCSILB["iSCSI Latebinding<br/>tkg-work-storage-iscsi-latebinding"]
+        NFSLB["NFS Latebinding<br/>tridentsvm-nfs-latebinding"]
+        ISCSILB["iSCSI Latebinding<br/>tkg-work-storage-iscsi-latebinding"]
+    end
+    subgraph cluster_4_Workloads["Persistent Workloads"]
+        Prometheus["Prometheus<br/>150Gi iSCSI"]
+        Alertmanager["Alertmanager<br/>120Gi iSCSI"]
+        MongoDB["MongoDB<br/>NFS/iSCSI"]
+        NATS["NATS<br/>1Gi NFS"]
+        Prometheus["Prometheus<br/>150Gi iSCSI"]
+        Alertmanager["Alertmanager<br/>120Gi iSCSI"]
+        MongoDB["MongoDB<br/>NFS/iSCSI"]
+        NATS["NATS<br/>1Gi NFS"]
+    end
+    SVM --> NFS_LIF
+    SVM --> ISCSI_LIF
+    NFS_LIF --> NFSBackend
+    ISCSI_LIF --> iSCSIBackend
+    NFSBackend --> NFSLB
+    iSCSIBackend --> ISCSILB
+    NFSLB --> MongoDB
+    NFSLB --> NATS
+    ISCSILB --> Prometheus
+    ISCSILB --> Alertmanager
+    ISCSILB --> MongoDB

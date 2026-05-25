@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph cluster_1_Networks["Network Topology"]
+        subgraph cluster_2_Site_AM_NET["mgmt-cluster<br/>Nodes: 192.0.2.10-192.0.2.19<br/>Storage: 203.0.113.10-203.0.113.17<br/>Restricted Ingress: 192.0.2.110-192.0.2.119"]
+            Site_AM_GW["East-West Gateway"]
+            Site_AM_LB["Contour LB<br/>198.51.100.15"]
+            Site_AM_MetalLB["MetalLB: 198.51.100.10-198.51.100.19<br/>Restricted Ingress: 198.51.100.110-198.51.100.119"]
+            Site_AM_GW["East-West Gateway"]
+            Site_AM_LB["Contour LB<br/>198.51.100.15"]
+            Site_AM_MetalLB["MetalLB: 198.51.100.10-198.51.100.19<br/>Restricted Ingress: 198.51.100.110-198.51.100.119"]
+        end
+        subgraph cluster_3_Site_AD_NET["app-cluster-a<br/>Nodes: 192.0.2.20-192.0.2.29<br/>Storage: 203.0.113.20-203.0.113.26<br/>Restricted Ingress: 192.0.2.120-192.0.2.129"]
+            Site_AD_GW["East-West Gateway"]
+            Site_AD_LB["Contour LB<br/>198.51.100.25"]
+            Site_AD_MetalLB["MetalLB: 198.51.100.20-198.51.100.29<br/>Restricted Ingress: 198.51.100.120-198.51.100.129"]
+            Site_AD_GW["East-West Gateway"]
+            Site_AD_LB["Contour LB<br/>198.51.100.25"]
+            Site_AD_MetalLB["MetalLB: 198.51.100.20-198.51.100.29<br/>Restricted Ingress: 198.51.100.120-198.51.100.129"]
+        end
+        subgraph cluster_4_Site_BD_NET["app-cluster-b<br/>Nodes: 192.0.2.30-192.0.2.39<br/>Storage: 203.0.113.30-203.0.113.36<br/>Restricted Ingress: 192.0.2.130-192.0.2.139"]
+            Site_BD_GW["East-West Gateway"]
+            Site_BD_LB["Contour LB<br/>198.51.100.35"]
+            Site_BD_MetalLB["MetalLB: 198.51.100.30-198.51.100.39<br/>Restricted Ingress: 198.51.100.130-198.51.100.139"]
+            Site_BD_GW["East-West Gateway"]
+            Site_BD_LB["Contour LB<br/>198.51.100.35"]
+            Site_BD_MetalLB["MetalLB: 198.51.100.30-198.51.100.39<br/>Restricted Ingress: 198.51.100.130-198.51.100.139"]
+        end
+        subgraph cluster_5_Site_CD_NET["app-cluster-c<br/>Nodes: 192.0.2.40-192.0.2.49<br/>Storage: 203.0.113.40-203.0.113.46<br/>Restricted Ingress: 192.0.2.140-192.0.2.149"]
+            Site_CD_GW["East-West Gateway"]
+            Site_CD_LB["Contour LB<br/>198.51.100.45"]
+            Site_CD_MetalLB["MetalLB: 198.51.100.40-198.51.100.49<br/>Restricted Ingress: 198.51.100.140-198.51.100.149"]
+            Site_CD_GW["East-West Gateway"]
+            Site_CD_LB["Contour LB<br/>198.51.100.45"]
+            Site_CD_MetalLB["MetalLB: 198.51.100.40-198.51.100.49<br/>Restricted Ingress: 198.51.100.140-198.51.100.149"]
+        end
+    end
+    Site_AM_GW <-.Mesh Traffic.-> Site_AD_GW
+    Site_AM_GW <-.Mesh Traffic.-> Site_BD_GW
+    Site_AM_GW <-.Mesh Traffic.-> Site_CD_GW
+    Site_AD_GW <-.Mesh Traffic.-> Site_BD_GW
+    Site_AD_GW <-.Mesh Traffic.-> Site_CD_GW
+    Site_BD_GW <-.Mesh Traffic.-> Site_CD_GW
