@@ -16,6 +16,18 @@ The latest Mermaid source commit changed the following diagrams:
 | 05 | `system-design-document-diagram-05.mmd` | Adjusted Service Certificates subgraph spacing for better render layout. |
 | 09 | `system-design-document-diagram-09.mmd` | Rebuilt MongoDB topology by Site A/B/C, added MongoDB OpsManager, removed duplicate nodes. |
 
+## Markdown consumers updated
+
+The update package now includes Markdown synchronization. During application, `sync-mermaid-markdown.py` scans all repository `.md` files and replaces any Mermaid block that is immediately bound to one of the changed diagram exports.
+
+Expected Markdown/index consumers from repository search:
+
+| File | Action |
+| --- | --- |
+| `docs/System-Design-Document.md` | Sync embedded Mermaid blocks for diagrams 01, 02, 03, 05, and 09 from `diagrams/mermaid-source`. |
+| `diagrams/DIAGRAM-INDEX.md` | Refresh diagram links and node/edge counts from Mermaid source. |
+| `diagrams/DIAGRAM-INDEX.json` | Refresh diagram node/edge counts from Mermaid source. |
+
 ## Generated assets
 
 The following SVG and PNG files were regenerated from the latest Mermaid sources:
@@ -40,6 +52,6 @@ The following SVG and PNG files were regenerated from the latest Mermaid sources
   - Diagram 05: 1568 x 842
   - Diagram 09: 1568 x 1076
 
-## Repo update note
+## Operational note
 
-The direct GitHub connector available in this session provided repository read/write metadata access but not a clean local clone or binary asset handoff from the render workspace into Git object writes. To avoid a partial or corrupted direct push, the regenerated assets are packaged for review and commit.
+This package is designed to be applied as one commit so the repository does not drift between Mermaid source, rendered image exports, and Markdown documentation consumers.
