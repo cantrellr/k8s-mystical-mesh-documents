@@ -3,7 +3,7 @@
 > **Public release rewrite note:** This file uses public-safe cluster names, DNS names, paths, and RFC documentation IP ranges. It preserves the platform design intent but is not a live deployment inventory.
 
 **Reference Architecture Environment**  
-**Version:** 2.0  
+**Version:** 2.1  
 **Date:** July 1, 2026
 
 ---
@@ -23,12 +23,13 @@
 11. [Service Mesh Architecture](#service-mesh-architecture)
 12. [Monitoring and Observability](#monitoring-and-observability)
 13. [Application and Data Platform](#application-and-data-platform)
-14. [Configuration and Resource Baseline](#configuration-and-resource-baseline)
-15. [Scheduling and Disruption Policy](#scheduling-and-disruption-policy)
-16. [Operations and Validation](#operations-and-validation)
-17. [Emergency and Recovery Procedures](#emergency-and-recovery-procedures)
-18. [Recommendations and Backlog](#recommendations-and-backlog)
-19. [Appendix: Consolidated Source Map](#appendix-consolidated-source-map)
+14. [Keycloak PostgreSQL Database Architecture](#keycloak-postgresql-database-architecture)
+15. [Configuration and Resource Baseline](#configuration-and-resource-baseline)
+16. [Scheduling and Disruption Policy](#scheduling-and-disruption-policy)
+17. [Operations and Validation](#operations-and-validation)
+18. [Emergency and Recovery Procedures](#emergency-and-recovery-procedures)
+19. [Recommendations and Backlog](#recommendations-and-backlog)
+20. [Appendix: Consolidated Source Map](#appendix-consolidated-source-map)
 
 ---
 
@@ -40,7 +41,7 @@ K8s Mystical Mesh is a public-safe reference architecture for an air-gapped, ent
 2. **Multi multi-node clusters** — multiple resilient clusters across sites, missions, or security domains.
 3. **Single-node clusters** — constrained lab, edge, demo, or disconnected validation clusters with explicit availability caveats.
 
-The platform baseline includes RKE2, Rancher Manager, an internal registry, Kubernetes ingress segmentation, Istio service mesh, centralized observability, hardened workload security contexts, NetworkPolicies, persistent storage patterns, and operational runbooks. The design is optimized for disconnected or regulated environments where the registry, certificates, node lifecycle, image provenance, and deployment evidence all matter.
+The platform baseline includes RKE2, Rancher Manager, an internal registry, Kubernetes ingress segmentation, Istio service mesh, centralized observability, hardened workload security contexts, NetworkPolicies, persistent storage patterns, PostgreSQL-backed identity services, and operational runbooks. The design is optimized for disconnected or regulated environments where the registry, certificates, node lifecycle, image provenance, database ownership, and deployment evidence all matter.
 
 ### Core Design Principles
 
@@ -51,6 +52,7 @@ The platform baseline includes RKE2, Rancher Manager, an internal registry, Kube
 - Use **RKE2** for a predictable, supportable, compliant Kubernetes distribution lifecycle.
 - Apply **security context hardening**, **default-deny-ready NetworkPolicies**, and **least-privilege RBAC** as platform defaults.
 - Monitor infrastructure, mesh, ingress, application, database, and messaging layers through a centralized observability model.
+- Treat **Keycloak PostgreSQL** as stateful identity infrastructure, not as a disposable chart sidecar.
 
 ---
 
@@ -229,6 +231,7 @@ flowchart TB
 | MongoDB Operator / Ops Manager | Multi-cluster database lifecycle and replication |
 | NATS | Messaging substrate and event-delivery layer |
 | Keycloak | Identity plane and realm-managed authentication services |
+| Keycloak PostgreSQL | Persistent database for Keycloak realm, client, user, session, and event state |
 
 ---
 
@@ -304,7 +307,7 @@ The multi multi-node reference architecture uses four public-safe clusters.
 | Cluster | Site | Role | Primary Functions |
 | --- | --- | --- | --- |
 | `mgmt-cluster` | Site A | Management | Rancher, central monitoring, Grafana, Alertmanager, Kiali integration, Argo CD, MongoDB control functions |
-| `app-cluster-a` | Site A | Application | Rocket.Chat, MongoDB members, NATS, Keycloak/application services |
+| `app-cluster-a` | Site A | Application | Rocket.Chat, MongoDB members, NATS, Keycloak, Keycloak PostgreSQL, and application services |
 | `app-cluster-b` | Site B | Application | Application workloads and data replicas |
 | `app-cluster-c` | Site C | Application | Application workloads and data replicas |
 
@@ -331,7 +334,7 @@ The multi multi-node reference architecture uses four public-safe clusters.
 | Cluster | Control Plane | Workers | Spare | Notes |
 | --- | ---: | ---: | ---: | --- |
 | `mgmt-cluster` | 3 | 4 | 1 | Management and central observability capacity |
-| `app-cluster-a` | 3 | 3 | 1 | Site A application capacity |
+| `app-cluster-a` | 3 | 3 | 1 | Site A application and identity capacity |
 | `app-cluster-b` | 3 | 3 | 1 | Site B application capacity |
 | `app-cluster-c` | 3 | 3 | 1 | Site C application capacity |
 
@@ -387,6 +390,7 @@ flowchart LR
 | Service | Endpoint | Protocol | Purpose |
 | --- | --- | --- | --- |
 | Application UI | `rocket.platform.example.internal` | HTTP/HTTPS | User-facing application service |
+| Keycloak UI/API | `idp.platform.example.internal` | HTTPS | Identity and authentication endpoint |
 | Internal registry | `registry.example.internal:8443` | HTTPS | Container image repository |
 | External storage NFS | `storage.example.internal` | NFS | File-backed persistent volumes |
 | External storage iSCSI | `storage.example.internal` | iSCSI | Block-backed persistent volumes |
@@ -536,6 +540,21 @@ NetApp Trident provides the CSI storage abstraction for multi-node clusters. It 
 
 Storage is not just capacity infrastructure. It is a performance and failure-domain control surface for Prometheus, Alertmanager, Grafana PostgreSQL, MongoDB, Keycloak PostgreSQL, and application state.
 
+### Keycloak PostgreSQL Storage Pattern
+
+Keycloak requires a durable relational database for realm configuration, users, clients, roles, groups, identity-provider metadata, authentication flows, required actions, offline sessions, and event/audit tables. In this architecture, PostgreSQL is the database tier for Keycloak and must be treated as identity-plane state.
+
+| Requirement | Standard |
+| --- | --- |
+| Persistence | Dedicated PVC per PostgreSQL release or instance |
+| Storage class | External CSI-backed storage for multi-node clusters; local PV only for constrained single-node labs |
+| Binding mode | Late-binding storage classes preferred where supported |
+| Backup | Database-native dumps plus volume snapshots where available |
+| Restore | Tested restore into a clean namespace or recovery cluster before production reliance |
+| Ownership | Platform/identity team owns schema lifecycle and backup evidence |
+
+For multi-node clusters, Keycloak PostgreSQL should use external CSI-backed storage rather than node-local storage. For single-node clusters, local storage is acceptable only when the cluster is explicitly classified as lab, edge validation, or constrained test and the owner accepts the data-loss blast radius.
+
 ### Single-Node Local Storage
 
 Single-node clusters may use local disks or mounted local paths for persistent volumes.
@@ -573,10 +592,10 @@ Local persistent volumes bind workload availability to the health of the node an
 
 ## Security Architecture
 
-The current security baseline includes hardened pod security contexts, namespace-segmented NetworkPolicies, expanded default-deny automation coverage, ingress separation, and stronger monitoring access controls.
+The current security baseline includes hardened pod security contexts, namespace-segmented NetworkPolicies, expanded default-deny automation coverage, ingress separation, stronger monitoring access controls, and database isolation for identity services.
 
 **Current Risk Level:** Medium — network segmentation and security contexts are enforced, with remaining hardening gaps.  
-**Target Risk Level:** Low — strict mesh mTLS, NATS TLS default-on, Pod Security Admission enforcement, and default-deny policy coverage completed.
+**Target Risk Level:** Low — strict mesh mTLS, NATS TLS default-on, Pod Security Admission enforcement, database TLS, secret rotation, and default-deny policy coverage completed.
 
 ### Implemented Controls
 
@@ -586,10 +605,11 @@ The current security baseline includes hardened pod security contexts, namespace
 | Linux capabilities | Drop ALL by default, add only required capabilities |
 | seccomp | RuntimeDefault profile enforced |
 | privilege escalation | `allowPrivilegeEscalation: false` where supported |
-| NetworkPolicies | Application and infrastructure allow policies present |
+| NetworkPolicies | Application, identity, data, and infrastructure allow policies present |
 | default deny | Template and automation available; rollout requires validation |
-| namespace segmentation | Platform, restricted, monitoring, application, data, and messaging namespaces separated |
+| namespace segmentation | Platform, restricted, monitoring, application, identity, data, and messaging namespaces separated |
 | Kiali/Grafana access | Uses routed HTTPS FQDNs and Grafana service-account token |
+| Keycloak PostgreSQL isolation | Database access scoped to Keycloak pods, database service, backup jobs, and observability paths |
 
 ### NetworkPolicy Coverage
 
@@ -599,16 +619,28 @@ The current security baseline includes hardened pod security contexts, namespace
 | MongoDB | Allow application queries, operator management, replica communication, exporter metrics, and mesh gateway replication paths |
 | NATS | Allow application clients, cluster routes, exporter metrics, and DNS |
 | Monitoring | Allow Grafana, Prometheus, Alertmanager, Kiali integration, remote write, web UI, DNS, and Kubernetes API paths |
-| Keycloak | Constrain realm/application paths and database egress with namespace/pod scoped policies |
+| Keycloak | Allow ingress from approved ingress plane and admin paths; egress only to Keycloak PostgreSQL, DNS, Kubernetes API where required, and external identity providers when approved |
+| Keycloak PostgreSQL | Allow database ingress only from Keycloak pods, maintenance jobs, and approved database exporter paths |
 | Default deny | Deny all ingress and egress, then layer DNS and explicit allow policies |
+
+### Keycloak PostgreSQL Security Requirements
+
+- Store database credentials in Kubernetes Secrets or an approved external secret provider.
+- Rotate database credentials through a planned Keycloak rollout, not by ad hoc secret edits.
+- Prefer TLS for Keycloak-to-PostgreSQL traffic where supported by the selected chart/operator pattern.
+- Scope database user privileges to the Keycloak database and schema only.
+- Keep backup credentials separate from runtime application credentials.
+- Do not expose PostgreSQL through ingress. Database access stays cluster-internal.
+- Audit database backup and restore procedures because identity-plane recovery depends on them.
 
 ### Security Deployment Phases
 
 | Phase | Action | Risk |
 | --- | --- | --- |
 | 1 | Deploy security contexts | Low |
-| 2 | Deploy application NetworkPolicies | Medium |
+| 2 | Deploy application, identity, and database NetworkPolicies | Medium |
 | 3 | Deploy default-deny policies | High unless all dependencies are mapped |
+| 4 | Enable database TLS and credential rotation workflow | Medium; requires coordinated rollout |
 
 ### Remaining Security Backlog
 
@@ -617,6 +649,7 @@ The current security baseline includes hardened pod security contexts, namespace
 3. Add explicit allow lists for Envoy ingress to backend namespaces.
 4. Codify Istio mesh-wide strict mTLS with namespace-specific exceptions where required.
 5. Enforce Pod Security Admission labels instead of leaving them as commented guidance.
+6. Confirm Keycloak PostgreSQL TLS posture, secret rotation procedure, and restore evidence.
 
 ---
 
@@ -629,7 +662,8 @@ Istio provides traffic management, workload identity, mTLS, telemetry, and east-
 | Namespace / Workload | Sidecar Policy | Reason |
 | --- | --- | --- |
 | Rocket.Chat application pods | Injected | Application traffic should be visible in Kiali and Istio telemetry |
-| Keycloak pods | Explicit pod-level injection | Application workload, but namespaces also contain platform dependencies |
+| Keycloak pods | Explicit pod-level injection | Application workload, but namespaces also contain database and platform dependencies |
+| Keycloak PostgreSQL | Not injected by default | Database traffic should be protected with database-native TLS and NetworkPolicy unless mesh database policy is intentionally designed |
 | Istio east-west gateways | Injected by gateway chart | Gateway workloads are part of the data plane |
 | `istio-system` control-plane pods | Not injected | istiod, Kiali, and operators are control-plane components |
 | `monitoring` | Not injected | Observability services should not become mesh workload noise by default |
@@ -646,7 +680,7 @@ Service mesh east-west gateways expose constrained cross-cluster traffic, common
 
 ## Monitoring and Observability
 
-The monitoring design uses Prometheus Agent in every cluster, remote-writing to the central Prometheus server in `mgmt-cluster`. Grafana uses PostgreSQL for configuration state. Alertmanager handles alert routing. Kiali integrates with central Prometheus and Grafana using routable HTTPS endpoints.
+The monitoring design uses Prometheus Agent in every cluster, remote-writing to the central Prometheus server in `mgmt-cluster`. Grafana uses PostgreSQL for configuration state. Keycloak uses PostgreSQL for identity-plane state. Alertmanager handles alert routing. Kiali integrates with central Prometheus and Grafana using routable HTTPS endpoints.
 
 ### Metrics Coverage
 
@@ -662,11 +696,26 @@ The monitoring design uses Prometheus Agent in every cluster, remote-writing to 
 | MongoDB operator | Explicit ServiceMonitor |
 | MongoDB database internals | Backlog: enable MongoDB CR `spec.prometheus` and credentials |
 | Keycloak | Keycloak CR `serviceMonitor` setting |
-| PostgreSQL internals | Backlog: add postgres exporter pattern |
+| Keycloak PostgreSQL | Backlog: postgres-exporter or chart-native metrics service for database internals |
+| Grafana PostgreSQL | Backlog: postgres-exporter or chart-native metrics service for database internals |
+
+### Keycloak PostgreSQL Monitoring Signals
+
+| Signal | Why it matters |
+| --- | --- |
+| PostgreSQL pod readiness | Auth plane depends on database availability |
+| PVC capacity and inode usage | Full database volume can break login and admin operations |
+| Connection count | Detects pool exhaustion or application churn |
+| Lock wait and deadlock indicators | Exposes schema migration or transaction contention issues |
+| Slow queries | Identifies admin-console or realm-scale problems |
+| WAL/checkpoint pressure | Indicates storage throughput or retention risk |
+| Backup job result | Proves recovery evidence exists |
+| Restore test age | Shows whether backups are operational or just theoretical |
 
 ### Monitoring Baseline Updates
 
 - Grafana uses dedicated PostgreSQL in the `monitoring` namespace.
+- Keycloak uses dedicated PostgreSQL for identity-plane persistence.
 - Prometheus and Alertmanager use native storage models and are not moved to PostgreSQL.
 - Kiali reaches central Grafana and Prometheus through routable `platform.example.internal` HTTPS endpoints, not cross-cluster `.svc` DNS.
 - Kiali uses a Grafana service-account token stored in a `kiali-grafana-credentials` Secret in each cluster's `istio-system` namespace.
@@ -674,10 +723,11 @@ The monitoring design uses Prometheus Agent in every cluster, remote-writing to 
 
 ### Known Observability Backlog
 
-1. Add PostgreSQL exporter coverage for database-level internals such as connection count, locks, cache hit ratio, and slow query indicators.
+1. Add PostgreSQL exporter coverage for Keycloak and Grafana database internals.
 2. Enable MongoDB database/member metrics with credentials and matching ServiceMonitor wiring.
 3. Add Prometheus cardinality dashboards and alerts before onboarding more services.
 4. Add Alertmanager receiver configuration and test routing end-to-end.
+5. Add dashboard panels for Keycloak database health, PVC growth, backup status, and restore-test age.
 
 ---
 
@@ -699,6 +749,116 @@ NATS provides the asynchronous messaging substrate. Exporter metrics and policy 
 
 Keycloak provides the identity plane for users, applications, and external identity sources. Realm configuration should remain versioned, reproducible, and tied to policy controls. Pod-level sidecar injection is preferred over broad namespace injection where identity namespaces contain supporting dependencies.
 
+Keycloak is not stateless in any meaningful enterprise sense. The application pods can be recreated, but the identity-plane truth lives in PostgreSQL. Losing the Keycloak database means losing realm configuration, clients, roles, groups, identity-provider definitions, offline sessions, and administrative history unless those objects are also exported and recoverable through a tested process.
+
+---
+
+## Keycloak PostgreSQL Database Architecture
+
+PostgreSQL is the persistent database tier for Keycloak. It should be treated as a first-class identity-plane component with its own storage, backup, restore, network policy, credential, and monitoring requirements.
+
+```mermaid
+flowchart TB
+    subgraph Identity[Identity Plane]
+        Users[Users and Admins]
+        Ingress[platform-ingress]
+        Keycloak[Keycloak Pods]
+        KcSvc[Keycloak Service]
+    end
+
+    subgraph Database[Keycloak PostgreSQL]
+        PgSvc[PostgreSQL Service]
+        PgPod[PostgreSQL Pod]
+        PgPVC[Database PVC]
+        PgSecret[DB Credentials Secret]
+        PgBackup[Backup Job]
+    end
+
+    subgraph Platform[Platform Services]
+        DNS[CoreDNS]
+        CA[Certificate Authority]
+        Prom[Prometheus]
+        BackupTarget[Backup Target]
+    end
+
+    Users --> Ingress
+    Ingress --> KcSvc
+    KcSvc --> Keycloak
+    Keycloak --> PgSvc
+    PgSvc --> PgPod
+    PgPod --> PgPVC
+    PgSecret --> Keycloak
+    PgSecret --> PgPod
+    PgBackup --> PgPVC
+    PgBackup --> BackupTarget
+    Prom -.scrapes.-> Keycloak
+    Prom -.scrapes.-> PgPod
+    CA -.trust.-> Keycloak
+    DNS --> Keycloak
+```
+
+### Database Responsibility Boundary
+
+| Layer | Responsibility |
+| --- | --- |
+| Keycloak application | Authentication, realm runtime, admin API, federation, token services |
+| PostgreSQL database | Persistent realm, client, user, role, group, session, event, and metadata state |
+| Kubernetes storage | Durable PVC and volume lifecycle |
+| Backup platform | Database dump, volume snapshot, retention, restore validation |
+| Security platform | Secrets, NetworkPolicies, TLS, RBAC, audit evidence |
+| Observability platform | Pod health, database health, PVC growth, backup result, restore age |
+
+### Data Stored in Keycloak PostgreSQL
+
+| Data Category | Examples | Recovery Impact |
+| --- | --- | --- |
+| Realm configuration | Realms, flows, required actions, themes, policies | Realm behavior can drift or disappear |
+| Clients | OIDC/SAML clients, redirect URIs, secrets, scopes | Applications fail authentication |
+| Users and groups | Local users, groups, attributes, role mappings | Access decisions become unreliable |
+| Identity provider metadata | Federation links, broker config, LDAP/OIDC/SAML mappings | External login paths fail |
+| Sessions and offline tokens | Login sessions, refresh/offline state | Users may be forced to reauthenticate |
+| Events and admin audit | Login/admin events where enabled | Forensics and audit evidence may be lost |
+
+### Deployment Model
+
+| Environment | PostgreSQL Pattern | Position |
+| --- | --- | --- |
+| Single multi-node cluster | Dedicated PostgreSQL release with persistent external CSI-backed PVC | Acceptable baseline |
+| Multi multi-node clusters | Dedicated PostgreSQL per Keycloak deployment or approved external HA PostgreSQL service | Preferred for enterprise identity |
+| Single-node cluster | Local PostgreSQL with local PV only for lab/edge validation | Not HA; backup and restore testing mandatory |
+
+### Operational Requirements
+
+- Keycloak deployment must not start successfully unless the database secret, service, and PVC are present.
+- Database credentials must be scoped to the Keycloak database and schema.
+- Schema migration should be treated as a release event and captured in change records.
+- Backup jobs must run on a documented schedule and publish success/failure signals.
+- Restore tests must be run often enough to prove the backup is usable.
+- Keycloak and PostgreSQL upgrades should be coordinated; do not blindly upgrade both without a rollback point.
+- For production-like use, PostgreSQL should have an HA path or an accepted risk waiver.
+
+### Backup and Restore Standard
+
+| Control | Standard |
+| --- | --- |
+| Backup method | PostgreSQL-native logical backup plus storage snapshot where available |
+| Backup scope | Keycloak database, roles needed for restore, schema, and selected config exports |
+| Retention | Aligned to identity recovery objectives |
+| Encryption | Backup at rest and in transit where supported |
+| Restore target | Clean namespace, recovery cluster, or isolated validation environment |
+| Evidence | Backup timestamp, job result, restore test result, and operator sign-off |
+
+### Failure Modes
+
+| Failure | Impact | Response |
+| --- | --- | --- |
+| PostgreSQL pod down | Keycloak login and admin operations degrade or fail | Check pod, PVC, node, storage, and events |
+| PVC full | Database writes fail; auth behavior becomes unstable | Expand PVC or restore to larger target; investigate growth |
+| Secret mismatch | Keycloak cannot connect to database | Validate secret, deployment env, and rollout history |
+| Failed schema migration | Keycloak rollout fails or enters crash loop | Roll back application/database using tested release procedure |
+| Backup failure | Recovery point objective is not being met | Page platform/identity owner and fix backup path |
+| Restore untested | Backup is only theoretical | Schedule restore validation before production reliance |
+
 ---
 
 ## Configuration and Resource Baseline
@@ -713,6 +873,7 @@ The current baseline targets a 3k-5k continuous user reference range.
 | Rocket.Chat | `replicaCount: 4`, `minAvailable: 4`, microservices at 3 replicas each |
 | Rocket.Chat HPAs | Main, DDP streamer, presence, account, authorization, stream hub |
 | Keycloak | 3 instances per referenced realm, 1 CPU/2Gi request, 2 CPU/4Gi limit |
+| Keycloak PostgreSQL | Dedicated persistent database tier for Keycloak; production-like use requires backup/restore evidence and HA path or accepted risk |
 | MongoDB | 2 members per application cluster; secondary vote configuration added |
 | Ops Manager | 2 replicas, application database members increased |
 | Monitoring | Explicit Prometheus CPU limits by manager/application cluster profile |
@@ -726,20 +887,23 @@ The current baseline targets a 3k-5k continuous user reference range.
 | Ingress Envoy minimum | 1 pod x 4 clusters | 2.00 | 2Gi | 8.00 | 6Gi |
 | Rocket.Chat | base replicas | 5.50 | 15.5Gi | 20.00 | 31Gi |
 | Keycloak | 4 deployments x 3 instances | 12.00 | 24Gi | 24.00 | 48Gi |
+| Keycloak PostgreSQL | one database release per active realm group | Planning value depends on chart defaults and HA pattern | Planning value depends on PVC and cache behavior | Set explicitly | Set explicitly |
 | MongoDB + Ops Manager | multicluster + opsmanager | 8.80 | 23Gi | 32.00 | 64Gi |
 | Monitoring | 1 manager + 3 application clusters | 1.90 | 7Gi | 12.00 | 18Gi |
 | Mongo Express | 1 pod x 4 clusters | 0.40 | 0.5Gi | 2.00 | 2Gi |
 | Trident Protect | controller + 1 concurrent job | 1.25 | 2.5Gi | 6.00 | 10Gi |
-| **Grand Total** | all tiers combined | **34.85** | **79Gi** | **116.00** | **191Gi** |
+| **Grand Total** | all tiers combined | **34.85 plus Keycloak PostgreSQL** | **79Gi plus Keycloak PostgreSQL** | **116.00 plus Keycloak PostgreSQL** | **191Gi plus Keycloak PostgreSQL** |
+
+Keycloak PostgreSQL sizing must be explicit in deployment values. Do not leave it to BestEffort defaults in production-like environments.
 
 ### Full 5k User Capacity Target
 
 | Capacity Target | Requested CPU | Requested Memory | Limit CPU | Limit Memory |
 | --- | ---: | ---: | ---: | ---: |
-| Minimum baseline | 34.85 | 79Gi | 116.00 | 191Gi |
-| Full 5k target | 51.35 | 137.5Gi | 188.00 | 308Gi |
+| Minimum baseline | 34.85 plus Keycloak PostgreSQL | 79Gi plus Keycloak PostgreSQL | 116.00 plus Keycloak PostgreSQL | 191Gi plus Keycloak PostgreSQL |
+| Full 5k target | 51.35 plus Keycloak PostgreSQL | 137.5Gi plus Keycloak PostgreSQL | 188.00 plus Keycloak PostgreSQL | 308Gi plus Keycloak PostgreSQL |
 
-Recommended planning headroom for stable operations at 5k is at least 20% above requests: about 61.6 allocatable CPU cores and 165Gi allocatable memory.
+Recommended planning headroom for stable operations at 5k is at least 20% above requests. Database sizing must also include PostgreSQL shared buffers, connection count, WAL growth, maintenance work memory, and backup job overhead.
 
 ---
 
@@ -755,6 +919,7 @@ The scheduling posture spreads replicated workloads where it matters, avoids har
 | Envoy ingress data plane | DaemonSet placement | No PDB; DaemonSet/node lifecycle handles placement |
 | NATS | Hostname topology spread | PDB enabled, `maxUnavailable: 1` |
 | Keycloak realms | Host anti-affinity plus topology spread | Explicit PDB with `maxUnavailable: 1` |
+| Keycloak PostgreSQL | StatefulSet or database operator placement | Avoid artificial PDB on a single replica; HA requires separate PostgreSQL HA design |
 | PostgreSQL singletons | No artificial PDB | Single-replica databases must remain drain-able |
 | Prometheus / Alertmanager / Grafana singletons | No artificial PDB | Single-replica monitoring services should not block maintenance |
 | MongoDBMultiCluster members | One member per Kubernetes cluster | Resiliency comes from multi-cluster replica set design |
@@ -830,6 +995,36 @@ kubectl --context mgmt-cluster -n monitoring exec deploy/mgmt-cluster-server-gra
 
 Expected database type: `postgres`.
 
+### Keycloak and PostgreSQL Validation
+
+```bash
+# Keycloak application health
+kubectl get pods -n keycloak
+kubectl get svc -n keycloak
+kubectl get ingress -n keycloak
+kubectl logs -n keycloak deploy/<keycloak-deployment> --tail=100
+
+# PostgreSQL health
+kubectl get pods -n keycloak | grep -i postgres
+kubectl get pvc -n keycloak
+kubectl describe pvc -n keycloak <keycloak-postgres-pvc>
+
+# Connectivity from Keycloak to PostgreSQL
+kubectl exec -n keycloak deploy/<keycloak-deployment> -- \
+  nc -zv <keycloak-postgres-service> 5432
+
+# Confirm database-related secret exists
+kubectl get secret -n keycloak | grep -i postgres
+```
+
+Expected state:
+
+- Keycloak pods are running and ready.
+- PostgreSQL pod is running and bound to a persistent PVC.
+- Keycloak can reach the PostgreSQL service on the database port.
+- Database credentials are present as Kubernetes Secrets or delivered by an approved secret provider.
+- NetworkPolicies allow only the required Keycloak-to-PostgreSQL path.
+
 ### Storage Validation
 
 ```bash
@@ -885,6 +1080,8 @@ rate(nats_varz_in_msgs[5m])
 sum(rate(istio_requests_total[5m])) by (source_workload, destination_workload)
 ```
 
+Keycloak PostgreSQL query starters depend on exporter labels, but the platform should track database up/down, connection count, lock waits, transaction rate, checkpoint/WAL activity, and PVC utilization once exporter coverage is added.
+
 ---
 
 ## Emergency and Recovery Procedures
@@ -919,6 +1116,23 @@ kubectl top nodes
 kubectl describe node <node-name>
 ```
 
+### Keycloak / PostgreSQL Failure
+
+Treat Keycloak database failure as an identity-plane incident. Authentication, admin-console operations, token refresh, user federation, and application login paths may all be impacted.
+
+1. Confirm whether the failure is Keycloak application, PostgreSQL, storage, network policy, or secret related.
+2. Do not delete the PostgreSQL PVC as a troubleshooting shortcut.
+3. Capture pod logs, events, PVC status, and current Secret resource versions.
+4. If the database is corrupt or unrecoverable, restore to a clean namespace or recovery cluster first.
+5. Validate login, token refresh, admin-console access, application client auth, and federation after restore.
+
+```bash
+kubectl get pods,pvc,svc,secret -n keycloak
+kubectl get events -n keycloak --sort-by='.lastTimestamp'
+kubectl logs -n keycloak deploy/<keycloak-deployment> --tail=200
+kubectl logs -n keycloak statefulset/<keycloak-postgres-statefulset> --tail=200
+```
+
 ### Data Loss Prevention
 
 1. Take an immediate backup/snapshot where possible.
@@ -932,8 +1146,8 @@ For single-node clusters, recovery planning is mandatory because host loss, OS c
 
 | Escalation | Trigger |
 | --- | --- |
-| L1 to L2 | Service down more than 15 minutes, data inconsistency suspected, security incident suspected, repeated restart failures |
-| L2 to L3 | Multi-cluster failure, confirmed data loss, confirmed breach, architecture change needed |
+| L1 to L2 | Service down more than 15 minutes, identity login failure, data inconsistency suspected, security incident suspected, repeated restart failures |
+| L2 to L3 | Multi-cluster failure, confirmed identity database loss, confirmed breach, architecture change needed |
 
 ---
 
@@ -945,6 +1159,7 @@ For single-node clusters, recovery planning is mandatory because host loss, OS c
 - Add deeper backup and restore standards by cluster category.
 - Add Rancher RBAC group mapping once real enterprise group names are approved for private docs.
 - Regenerate diagram exports from the consolidated SDD and portfolio document.
+- Add deployment-specific Keycloak PostgreSQL sizing once the production chart/operator pattern is finalized.
 
 ### Technical Backlog
 
@@ -952,11 +1167,13 @@ For single-node clusters, recovery planning is mandatory because host loss, OS c
 2. Codify mesh-wide strict mTLS with namespace-specific exceptions.
 3. Add default-deny policies to both ingress namespaces.
 4. Add explicit Envoy-to-backend allow lists.
-5. Add PostgreSQL exporter coverage.
+5. Add PostgreSQL exporter coverage for Keycloak and Grafana database internals.
 6. Enable MongoDB database/member metrics with proper credentials.
 7. Add Alertmanager receivers and test routing.
 8. Add Prometheus cardinality dashboards and alerts.
 9. Formalize single-node backup and rebuild testing before stateful workload promotion.
+10. Define Keycloak PostgreSQL HA pattern or document accepted risk for single-replica deployments.
+11. Add Keycloak database backup, restore, and credential-rotation runbooks.
 
 ---
 
