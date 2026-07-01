@@ -18,25 +18,24 @@
 public-safe kubernetes platform documentation package
 ```
 
-This package contains public-safe versions of the K8s Mystical Mesh documentation files. It now organizes the platform into three enterprise cluster categories:
+This package contains public-safe documentation for the K8s Mystical Mesh platform. The documentation has been consolidated around a cluster portfolio model and a single authoritative System Design Document.
+
+## Cluster Portfolio
+
+The platform is organized into three enterprise cluster categories:
 
 1. **Single multi-node cluster** — one resilient cluster for shared platform or application services.
 2. **Multi multi-node clusters** — multiple resilient clusters across sites, missions, or security domains.
 3. **Single-node clusters** — constrained lab, edge, demo, or disconnected validation clusters with explicit availability caveats.
 
-## Contents
+## Authoritative Documents
 
-- `docs/` — rewritten Markdown/TXT documentation
-- `docs/Cluster-Portfolio-Strategy.md` — cluster category model and decision matrix
-- `docs/Rancher-Enterprise-Cluster-Management.md` — Rancher UI and Rancher Manager enterprise operating model
-- `docs/Single-Node-Cluster-Reference.md` — public-safe single-node architecture reference
-- `docs/System-Design-Document.md` — multi multi-node reference architecture
-- `docs/Air-Gap-Image-Supply-Chain.md` — public-safe image supply-chain and registry-promotion model
-- `Resource-Baseline-Analysis-public.xlsx` — rewritten workbook
-- `SANITIZATION-MAPPING.md` — source-to-public naming and IP mapping
-- `PUBLIC-RELEASE-REVIEW.md` — source/output file map and review notes
-- `PUBLIC-SANITIZATION-SCAN-REPORT.json` — automated scan results
-- `PACKAGE-MANIFEST.json` — file hashes and package metadata
+| Document | Purpose |
+| --- | --- |
+| `docs/Cluster-Portfolio-Strategy.md` | Concise decision guide for choosing between single multi-node, multi multi-node, and single-node cluster patterns. |
+| `docs/System-Design-Document.md` | Consolidated architecture, networking, security, storage, Rancher, RKE2, air-gap, monitoring, application, resource, scheduling, operations, and recovery reference. |
+
+Previous standalone Markdown documents under `docs/` were integrated into the SDD to reduce drift and keep one architectural source of truth.
 
 ## Naming Standard
 
@@ -65,10 +64,8 @@ The package uses:
 
 ## Release Guidance
 
-Run one final human review before pushing this to a public repository. The scanner removes obvious operational leakage, but diagrams, commands, and examples should still be checked by a human reviewer before release.
+Run one final human review before publishing. The scanner removes obvious operational leakage, but diagrams, commands, and examples should still be checked by a human reviewer before release.
 
 ## Diagram Exports
 
-Mermaid diagrams from the documentation have been exported to image files under `diagrams/`. See `diagrams/DIAGRAM-INDEX.md` for SVG, PNG, and Mermaid source references.
-
-New Mermaid diagrams added in the cluster portfolio, Rancher management, and single-node reference documents should be included in the next diagram export refresh.
+Mermaid diagrams from the consolidated SDD and portfolio strategy should be included in the next diagram export refresh.
