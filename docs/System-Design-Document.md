@@ -1,1946 +1,983 @@
-# Multi-Cluster Kubernetes System Design Document
+# K8s Mystical Mesh System Design Document
 
-> **Public release rewrite note:** This file was rewritten with public-safe cluster, realm, DNS, path, and IP placeholders. It preserves the platform design intent but is not a live deployment inventory.
+> **Public release rewrite note:** This file uses public-safe cluster names, DNS names, paths, and RFC documentation IP ranges. It preserves the platform design intent but is not a live deployment inventory.
 
 **Reference Architecture Environment**  
-**Version:** 1.5  
-**Date:** May 22, 2026
+**Version:** 2.0  
+**Date:** July 1, 2026
 
 ---
 
 ## Table of Contents
 
 1. [Executive Summary](#executive-summary)
-2. [System Architecture Overview](#system-architecture-overview)
-3. [Infrastructure Components](#infrastructure-components)
-4. [Component Deep Dive](#component-deep-dive)
+2. [Cluster Portfolio Model](#cluster-portfolio-model)
+3. [System Architecture Overview](#system-architecture-overview)
+4. [RKE2 Distribution and Node Lifecycle](#rke2-distribution-and-node-lifecycle)
 5. [Cluster Topology](#cluster-topology)
-6. [Networking Architecture](#networking-architecture)
-7. [Security Architecture](#security-architecture)
-8. [Storage Architecture](#storage-architecture)
-9. [Service Mesh Architecture](#service-mesh-architecture)
-10. [Monitoring and Observability](#monitoring-and-observability)
-11. [Application Stack](#application-stack)
-12. [Deployment Architecture](#deployment-architecture)
-13. [Security Best Practices Assessment](#security-best-practices-assessment)
-14. [Recommendations and Improvements](#recommendations-and-improvements)
-15. [Appendices](#appendices)
+6. [Network and Ingress Architecture](#network-and-ingress-architecture)
+7. [Rancher Enterprise Management](#rancher-enterprise-management)
+8. [Air-Gapped Image Supply Chain](#air-gapped-image-supply-chain)
+9. [Storage Architecture](#storage-architecture)
+10. [Security Architecture](#security-architecture)
+11. [Service Mesh Architecture](#service-mesh-architecture)
+12. [Monitoring and Observability](#monitoring-and-observability)
+13. [Application and Data Platform](#application-and-data-platform)
+14. [Configuration and Resource Baseline](#configuration-and-resource-baseline)
+15. [Scheduling and Disruption Policy](#scheduling-and-disruption-policy)
+16. [Operations and Validation](#operations-and-validation)
+17. [Emergency and Recovery Procedures](#emergency-and-recovery-procedures)
+18. [Recommendations and Backlog](#recommendations-and-backlog)
+19. [Appendix: Consolidated Source Map](#appendix-consolidated-source-map)
 
 ---
 
 ## Executive Summary
 
-This document describes a sophisticated multi-cluster Kubernetes deployment architecture designed for high availability, service mesh integration, and comprehensive monitoring. The system comprises **four Kubernetes clusters** deployed across multiple sites with advanced networking, storage, and security capabilities.
+K8s Mystical Mesh is a public-safe reference architecture for an air-gapped, enterprise Kubernetes platform. The architecture supports three cluster deployment categories:
 
-### Key Characteristics
+1. **Single multi-node cluster** — one resilient cluster for shared platform services or application workloads.
+2. **Multi multi-node clusters** — multiple resilient clusters across sites, missions, or security domains.
+3. **Single-node clusters** — constrained lab, edge, demo, or disconnected validation clusters with explicit availability caveats.
 
-- **Multi-cluster architecture** with Istio service mesh spanning all clusters
-- **Geographic distribution** across three sites (site-b, site-a, site-c)
-- **MongoDB multi-cluster replication** for data resilience
-- **Centralized monitoring** with Prometheus federation
-- **Enterprise-grade storage** with NetApp Trident
-- **Microservices deployment** running Rocket.Chat as primary application
+The platform baseline includes RKE2, Rancher Manager, an internal registry, Kubernetes ingress segmentation, Istio service mesh, centralized observability, hardened workload security contexts, NetworkPolicies, persistent storage patterns, and operational runbooks. The design is optimized for disconnected or regulated environments where the registry, certificates, node lifecycle, image provenance, and deployment evidence all matter.
 
-### Current Baseline Addendum (April 2026)
+### Core Design Principles
 
-For exact deployable defaults, use `docs/Configuration-Baseline.md` as source of truth.
+- Use **Rancher Manager** as the enterprise cluster operating console.
+- Treat the **internal registry** as a Tier-0 dependency in air-gapped environments.
+- Keep **cluster categories explicit** so single-node, single-cluster, and multi-cluster designs do not blur risk assumptions.
+- Separate **platform ingress** from **restricted ingress** to reduce routing ambiguity and blast radius.
+- Use **RKE2** for a predictable, supportable, compliant Kubernetes distribution lifecycle.
+- Apply **security context hardening**, **default-deny-ready NetworkPolicies**, and **least-privilege RBAC** as platform defaults.
+- Monitor infrastructure, mesh, ingress, application, database, and messaging layers through a centralized observability model.
 
-This baseline supersedes older numeric examples in this design document where values differ.
-Current operational defaults include:
+---
 
-- Contour ingress controller `replicaCount: 3` with explicit Contour/Envoy resources.
-- Rocket.Chat baseline `replicaCount: 4`, `minAvailable: 4`, and microservice replicas at 3.
-- Six Rocket.Chat HPAs (main + five microservices).
-- Keycloak CRs at `instances: 3` with 1 CPU/2Gi requests and 2 CPU/4Gi limits.
-- MongoDB multicluster members increased to 2 per application cluster, with Ops Manager replicas increased to 2.
-- Expanded NetworkPolicy coverage (including keycloak variants) and tighter monitoring policy selectors.
+## Cluster Portfolio Model
+
+The cluster portfolio model is the architecture anchor for this documentation package. `docs/Cluster-Portfolio-Strategy.md` remains as the short decision guide. This SDD is the consolidated detail document.
+
+```mermaid
+flowchart TB
+    Portfolio[Enterprise Kubernetes Portfolio]
+    Portfolio --> SingleMulti[Single Multi-Node Cluster]
+    Portfolio --> MultiMulti[Multi Multi-Node Clusters]
+    Portfolio --> SingleNode[Single-Node Clusters]
+
+    SingleMulti --> HA[High Availability Inside One Cluster]
+    SingleMulti --> Shared[Shared Platform Services]
+    SingleMulti --> SimpleOps[Simpler Operations]
+
+    MultiMulti --> Isolation[Site or Mission Isolation]
+    MultiMulti --> Mesh[Cross-Cluster Mesh]
+    MultiMulti --> CentralOps[Central Operations]
+
+    SingleNode --> Lab[Lab and Edge Use]
+    SingleNode --> LocalStorage[Local Storage]
+    SingleNode --> AcceptedRisk[Accepted Availability Risk]
+```
+
+### Category Decision Matrix
+
+| Requirement | Single Multi-Node | Multi Multi-Node | Single-Node |
+| --- | --- | --- | --- |
+| High availability | Strong | Strongest | Weak |
+| Operational simplicity | Strong | Moderate | Strong |
+| Security isolation | Moderate | Strongest | Moderate |
+| Cost efficiency | Moderate | Weak | Strong |
+| Edge or lab fit | Moderate | Weak | Strong |
+| Enterprise governance | Strong | Strongest | Moderate with Rancher |
+| Disaster recovery | Moderate | Strong | Manual and backup-driven |
+
+### Category 1: Single Multi-Node Cluster
+
+A single multi-node cluster is the default target when the enterprise needs Kubernetes resiliency but does not need separate cluster fault domains.
+
+| Attribute | Standard |
+| --- | --- |
+| Control plane | Three or more server nodes |
+| Worker capacity | Dedicated worker nodes |
+| Storage | External CSI-backed storage preferred |
+| Ingress | Redundant ingress replicas |
+| Operations | One lifecycle domain |
+| Best fit | Department platform, shared services, internal applications |
+
+```mermaid
+flowchart TB
+    subgraph Cluster[Single Multi-Node Cluster]
+        CP1[Control Plane 1]
+        CP2[Control Plane 2]
+        CP3[Control Plane 3]
+        W1[Worker 1]
+        W2[Worker 2]
+        W3[Worker 3]
+        Ingress[Ingress Fabric]
+        Storage[External Storage]
+        Monitor[Monitoring]
+    end
+
+    Users[Users] --> Ingress
+    Ingress --> W1
+    Ingress --> W2
+    Ingress --> W3
+    CP1 --- CP2
+    CP2 --- CP3
+    CP3 --- CP1
+    W1 --> Storage
+    W2 --> Storage
+    W3 --> Storage
+    Monitor --> Cluster
+```
+
+### Category 2: Multi Multi-Node Clusters
+
+Multi multi-node clusters are used when mission boundaries, sites, security domains, or resiliency requirements justify multiple fully resilient clusters.
+
+| Attribute | Standard |
+| --- | --- |
+| Control plane | Three or more server nodes per cluster |
+| Worker capacity | Dedicated worker nodes per cluster |
+| Management | Centralized Rancher Manager |
+| GitOps | Fleet or Argo CD by target group |
+| Observability | Central aggregation with cluster labels |
+| Best fit | Enterprise platform, segmented missions, multi-site operations |
+
+### Category 3: Single-Node Clusters
+
+Single-node clusters are valid for labs, edge locations, demos, developer sandboxes, and constrained test environments. They are not equivalent to high-availability production clusters.
+
+| Attribute | Standard |
+| --- | --- |
+| Control plane | One server node |
+| Worker capacity | Co-located on the same node |
+| Storage | Local disks or constrained external storage |
+| Management | Imported into Rancher for visibility and governance |
+| Availability | Host-level fault domain |
+| Best fit | Lab, edge, disconnected test, proof-of-concept |
+
+A single-node cluster can be useful, but it is not resilient. The trade is cost and simplicity in exchange for a larger failure domain.
 
 ---
 
 ## System Architecture Overview
 
-### Architecture Diagram
+The reference platform centers on a Rancher-managed estate, internal image registry, RKE2 cluster lifecycle, segmented ingress, centralized monitoring, and workload/data services.
 
 ```mermaid
 flowchart TB
-    subgraph cluster_1_Site_Site_A["Site A"]
-        subgraph cluster_2_Site_AM["Management Cluster"]
-            Site_AM_ISTIO["Istio Control Plane"]
-            Site_AM_PROM["Prometheus Stack<br/>Central Monitoring"]
-            Site_AM_MONGO["MongoDB Operator"]
-            Site_AM_MONGO_OPS["MongoDB OpsManager"]
-            Site_AM_GRAFANA["Grafana Dashboard"]
-            Site_AM_ALERT["Alertmanager"]
-            Site_AM_ISTIO["Istio Control Plane"]
-            Site_AM_PROM["Prometheus Stack<br/>Central Monitoring"]
-            Site_AM_MONGO["MongoDB Operator"]
-            Site_AM_GRAFANA["Grafana Dashboard"]
-            Site_AM_ALERT["Alertmanager"]
-        end
-        subgraph cluster_3_Site_AD["App Cluster"]
-            Site_AD_ISTIO["Istio Control Plane"]
-            Site_AD_PROM["Prometheus Agent"]
-            Site_AD_ROCKET["Rocket.Chat Pods"]
-            Site_AD_MONGO["MongoDB ReplicaSet"]
-            Site_AD_ISTIO["Istio Control Plane"]
-            Site_AD_PROM["Prometheus Agent"]
-            Site_AD_ROCKET["Rocket.Chat Pods"]
-            Site_AD_MONGO["MongoDB ReplicaSet"]
-        end
+    subgraph Enterprise[Enterprise Control Plane]
+        IdP[Enterprise Identity]
+        Rancher[Rancher Manager]
+        Git[Git Repositories]
+        Registry[Internal Registry]
+        CA[Enterprise CA]
+        Observability[Central Observability]
     end
-    subgraph cluster_4_Site_Site_B["Site B"]
-        subgraph cluster_5_Site_BD["App Cluster"]
-            Site_BD_ISTIO["Istio Control Plane"]
-            Site_BD_PROM["Prometheus Agent"]
-            Site_BD_ROCKET["Rocket.Chat Pods"]
-            Site_BD_MONGO["MongoDB ReplicaSet"]
-            Site_BD_ISTIO["Istio Control Plane"]
-            Site_BD_PROM["Prometheus Agent"]
-            Site_BD_ROCKET["Rocket.Chat Pods"]
-            Site_BD_MONGO["MongoDB ReplicaSet"]
-        end
+
+    subgraph MultiCluster[Multi Multi-Node Reference]
+        Mgmt[mgmt-cluster]
+        AppA[app-cluster-a]
+        AppB[app-cluster-b]
+        AppC[app-cluster-c]
     end
-    subgraph cluster_6_Site_Site_C["Site C"]
-        subgraph cluster_7_Site_CD["App Cluster"]
-            Site_CD_ISTIO["Istio Control Plane"]
-            Site_CD_PROM["Prometheus Agent"]
-            Site_CD_ROCKET["Rocket.Chat Pods"]
-            Site_CD_MONGO["MongoDB ReplicaSet"]
-            Site_CD_ISTIO["Istio Control Plane"]
-            Site_CD_PROM["Prometheus Agent"]
-            Site_CD_ROCKET["Rocket.Chat Pods"]
-            Site_CD_MONGO["MongoDB ReplicaSet"]
-        end
+
+    subgraph SingleCluster[Single Multi-Node Reference]
+        SingleHA[single-multinode-cluster]
     end
-    subgraph cluster_8_External["<br/><br/><br/><br/><br/><br/>External Services"]
-        REGISTRY["Container Registry<br/>registry.example.internal:8443"]
-        STORAGE["NetApp Storage<br/>storage.example.internal"]
+
+    subgraph SingleNode[Single-Node Reference]
+        Edge[single-node-cluster]
     end
-    Site_AM["Site A Management<br/>Cluster"]
-    Site_AD["Site A Domain<br/>Cluster"]
-    Site_BD["Site B Domain<br/>Cluster"]
-    Site_CD["Site C Domain<br/>Cluster"]
-    Site_AM_PROM -.Remote Write.-> Site_AD_PROM
-    Site_AM_PROM -.Remote Write.-> Site_BD_PROM
-    Site_AM_PROM -.Remote Write.-> Site_CD_PROM
-    Site_AM_ISTIO <-.Service Mesh.-> Site_AD_ISTIO
-    Site_AM_ISTIO <-.Service Mesh.-> Site_BD_ISTIO
-    Site_AM_ISTIO <-.Service Mesh.-> Site_CD_ISTIO
-    Site_AD_MONGO <-.Replication.-> Site_BD_MONGO
-    Site_AD_MONGO <-.Replication.-> Site_CD_MONGO
-    Site_BD_MONGO <-.Replication.-> Site_CD_MONGO
-    Site_AM --> REGISTRY
-    Site_AD --> REGISTRY
-    Site_BD --> REGISTRY
-    Site_CD --> REGISTRY
-    Site_AM --> STORAGE
-    Site_AD --> STORAGE
-    Site_BD --> STORAGE
-    Site_CD --> STORAGE
-    style REGISTRY fill:#ffebee
-    style STORAGE fill:#ffebee
+
+    IdP --> Rancher
+    Rancher --> Mgmt
+    Rancher --> AppA
+    Rancher --> AppB
+    Rancher --> AppC
+    Rancher --> SingleHA
+    Rancher --> Edge
+    Git --> Rancher
+    Registry --> MultiCluster
+    Registry --> SingleCluster
+    Registry --> SingleNode
+    CA --> MultiCluster
+    CA --> SingleCluster
+    CA --> SingleNode
+    MultiCluster --> Observability
+    SingleCluster --> Observability
+    SingleNode --> Observability
 ```
-
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-01.svg) | [PNG](../diagrams/png/system-design-document-diagram-01.png)
-
-### Cluster Overview
-
-| Cluster | Site | Role | Primary Functions |
-| --------- | ------ | ------ | ------------------ |
-| **mgmt-cluster** | Site A | Management/Control | MongoDB Operator, Central Monitoring, Istio Primary |
-| **app-cluster-a** | Site A | Application | Rocket.Chat, MongoDB ReplicaSet, Istio Data Plane |
-| **app-cluster-b** | Site B | Application | Rocket.Chat, MongoDB ReplicaSet, Istio Data Plane |
-| **app-cluster-c** | Site C | Application | Rocket.Chat, MongoDB ReplicaSet, Istio Data Plane |
-
----
-
-## Infrastructure Components
 
 ### Core Platform Components
 
-```mermaid
-flowchart TB
-    subgraph cluster_1_CoreInfra["Core Infrastructure - All Clusters"]
-        CoreDNS["CoreDNS<br/>DNS Resolution"]
-        CertMgr["cert-manager<br/>Certificate Management"]
-        MetalLB["MetalLB<br/>Load Balancer"]
-        Contour["Contour<br/>Ingress Controller"]
-        Trident["NetApp Trident<br/>Storage Provisioner"]
-        CoreDNS["CoreDNS<br/>DNS Resolution"]
-        CertMgr["cert-manager<br/>Certificate Management"]
-        MetalLB["MetalLB<br/>Load Balancer"]
-        Contour["Contour<br/>Ingress Controller"]
-        Trident["NetApp Trident<br/>Storage Provisioner"]
-    end
-    subgraph cluster_2_ServiceMesh["Service Mesh - All Clusters"]
-        IstioBase["Istio Base"]
-        Istiod["Istiod<br/>Control Plane"]
-        Gateway["East-West Gateway<br/>Multi-cluster Traffic"]
-        Kiali["Kiali<br/>Service Mesh Visualization"]
-        IstioBase["Istio Base"]
-        Istiod["Istiod<br/>Control Plane"]
-        Gateway["East-West Gateway<br/>Multi-cluster Traffic"]
-        Kiali["Kiali<br/>Service Mesh Visualization"]
-    end
-    subgraph cluster_3_Monitoring["Monitoring Stack - mgmt-cluster"]
-        Prometheus["Prometheus"]
-        Grafana["Grafana"]
-        Alertmanager["Alertmanager"]
-        KubeSM["kube-state-metrics"]
-        NodeExp["node-exporter"]
-        Prometheus["Prometheus"]
-        Grafana["Grafana"]
-        Alertmanager["Alertmanager"]
-        KubeSM["kube-state-metrics"]
-        NodeExp["node-exporter"]
-    end
-    subgraph cluster_4_AppPlatform["Application Platform"]
-        MongoDB["MongoDB Operator<br/>Multi-cluster"]
-        NATS["NATS Cluster<br/>Messaging"]
-        RocketChat["Rocket.Chat<br/>Microservices"]
-        MongoDB["MongoDB Operator<br/>Multi-cluster"]
-        NATS["NATS Cluster<br/>Messaging"]
-        RocketChat["Rocket.Chat<br/>Microservices"]
-    end
-    CoreInfra["CoreInfra"]
-    ServiceMesh["ServiceMesh"]
-    AppPlatform["AppPlatform"]
-    Monitoring["Monitoring"]
-    CoreInfra --> ServiceMesh
-    ServiceMesh --> AppPlatform
-    Monitoring -.Scrapes.-> CoreInfra
-    Monitoring -.Scrapes.-> ServiceMesh
-    Monitoring -.Scrapes.-> AppPlatform
-```
-
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-02.svg) | [PNG](../diagrams/png/system-design-document-diagram-02.png)
-
-
-### Component Versions
-
-| Component | Version | Registry |
-| ----------- | --------- | ---------- |
-| **Istio** | 1.27.1 | registry.example.internal:8443/library/istio |
-| **cert-manager** | 1.5.14 (Bitnami) | registry.example.internal:8443/library |
-| **MetalLB** | 0.15.2 | registry.example.internal:8443/library/metallb |
-| **Contour** | 21.1.4 (Bitnami) | registry.example.internal:8443/library |
-| **Trident Operator** | 100.2602.0 | registry.example.internal:8443/library/netapp |
-| **Trident Protect** | 100.2602.0 | registry.example.internal:8443/library/netapp |
-| **Prometheus Stack** | 82.1.0 (kube-prometheus-stack) | registry.example.internal:8443/library |
-| **MongoDB Kubernetes** | 1.5.0 | registry.example.internal:8443/library/mongodb |
-| **NATS** | 2.12.2 | registry.example.internal:8443/library |
-| **Rocket.Chat** | 7.13.1 | registry.example.internal:8443/library/rocketchat |
-| **Kiali Operator** | 2.13.0 | registry.example.internal:8443/library |
+| Component | Role |
+| --- | --- |
+| RKE2 | Kubernetes distribution and node lifecycle baseline |
+| Rancher Manager | Central cluster management, RBAC, UI, policy, and lifecycle visibility |
+| Internal Registry | Air-gapped image source of truth |
+| cert-manager | Certificate automation |
+| MetalLB | Bare-metal LoadBalancer VIP allocation |
+| Contour / Envoy | L7 ingress controller for platform and restricted ingress planes |
+| Istio | Service mesh, mTLS, telemetry, and east-west gateways |
+| Prometheus / Alertmanager | Central metrics storage, alerting, and remote-write intake |
+| Grafana | Dashboards backed by PostgreSQL configuration storage |
+| Kiali | Mesh visualization integrated with central Prometheus and Grafana |
+| NetApp Trident | CSI storage provisioning for multi-node clusters |
+| Local PVs | Constrained storage option for single-node clusters |
+| Rocket.Chat | Primary application workload reference |
+| MongoDB Operator / Ops Manager | Multi-cluster database lifecycle and replication |
+| NATS | Messaging substrate and event-delivery layer |
+| Keycloak | Identity plane and realm-managed authentication services |
 
 ---
 
-## Component Deep Dive
+## RKE2 Distribution and Node Lifecycle
 
-### Foundational Cluster Services and Traffic Entry Stack
+RKE2 is the Kubernetes distribution baseline. It packages the runtime path into a predictable node lifecycle. Each node installs a single RKE2 binary, starts in server or agent mode, bootstraps runtime content, supervises containerd and kubelet, and starts server-side control-plane components as static pods where applicable.
 
-The foundational layer is built as a tightly coupled set of control services that convert raw Kubernetes clusters into deterministic, production-grade runtime domains. CoreDNS is not treated as a default black box; it is patched early because every later subsystem, including service mesh endpoint discovery, certificate issuer lookups, and internal service routing, depends on low-latency, consistent DNS behavior under frequent control-plane updates. The practical implication is that DNS quality directly influences rollout convergence time and failure recovery characteristics. When deployments are spread across four clusters and several namespaces with sidecar interception, DNS jitter and stale cache behavior can amplify into readiness failures, delayed mesh endpoint propagation, and transient cross-cluster timeouts. In this architecture, DNS preparation is therefore an infrastructure gate, not a post-install tuning item.
+```mermaid
+flowchart TB
+    subgraph ContentSources[Air-Gap Content Sources]
+        LocalTar[Local Image Tarballs]
+        PrivateRegistry[Private Registry Mirror]
+        RuntimeImage[RKE2 Runtime Image]
+    end
 
-cert-manager, MetalLB, and Contour then establish the ingress and certificate boundary for application and platform traffic. cert-manager serves as the X.509 automation engine across namespaces, removing manual certificate rotation from operations and making certificate issuance semantics reproducible across sites. MetalLB supplies stable address allocation in bare-metal-style environments where cloud load balancers are unavailable; this effectively turns service exposure into an address-pool management discipline tied to each site and segment. Contour and Envoy provide the policy-aware L7 entry point, but technically they also act as a normalization layer between internal service topology and external consumers, converting diverse backend readiness states into a predictable ingress contract. When these components are installed in sequence and configured from site overlays, they behave as a single ingress fabric: address ownership (MetalLB), cryptographic identity (cert-manager), and HTTP/TCP routing policy (Contour) are separately managed but operationally inseparable.
+    subgraph Node[Every RKE2 Node]
+        RKE2Binary[rke2 Binary]
+        DataDir[RKE2 Data Directory]
+        Containerd[containerd and CRI]
+        Runtime[runc and Shims]
+        Kubelet[kubelet]
+    end
 
-### Service Mesh Control Plane and Multi-Cluster Transport Semantics
+    subgraph ServerNode[RKE2 Server Node]
+        Etcd[etcd Static Pod]
+        ApiServer[kube-apiserver Static Pod]
+        ControllerManager[kube-controller-manager Static Pod]
+        Scheduler[kube-scheduler Static Pod]
+        HelmController[embedded helm-controller]
+        BootstrapCharts[Server Manifests]
+    end
 
-Istio in this environment functions as a distributed traffic operating system rather than a simple sidecar framework. Istiod maintains xDS state for all sidecar and gateway proxies, continuously reconciling desired policy, identity, and routing intent with live workload endpoints. Because each cluster has local control-plane representation while participating in a shared mesh identity model, the system gains fault-containment advantages without giving up cross-cluster traffic capabilities. East-west gateways on port 15443 provide a constrained, mTLS-protected transport corridor for inter-cluster service communication, and remote secret exchange allows API server trust and endpoint advertisement to scale beyond a single cluster scope. This design avoids hard coupling between application namespaces and physical site boundaries while preserving cryptographic verification at every hop.
+    subgraph Controls[Compliance and Air-Gap Controls]
+        InternalCA[Internal CA Trust]
+        Hardening[CIS STIG FIPS Posture]
+        ImageControl[Image Provenance]
+        Policy[RBAC Admission NetworkPolicy]
+    end
 
-From a data-plane behavior perspective, sidecars enforce policy close to workloads, which means security and routing decisions are evaluated at connection boundaries where identity and telemetry are richest. Certificate rotation and SPIFFE-style workload identity are handled by mesh PKI integration, reducing the need for application-level certificate mechanics in most services. Operationally, this creates a powerful debugging model: traffic policy, retries, outlier detection, and mTLS posture are inspectable and tunable at the mesh layer without redeploying every application component. In multi-site topologies, this is essential because network asymmetry, partial site degradation, and replica distribution shifts are normal conditions, not exceptions. The mesh absorbs much of this complexity by making transport policy declarative and continuously convergent.
+    LocalTar --> RuntimeImage
+    PrivateRegistry --> RuntimeImage
+    RuntimeImage --> RKE2Binary
+    RKE2Binary --> DataDir
+    DataDir --> Containerd
+    Containerd --> Runtime
+    Containerd --> Kubelet
+    Kubelet --> Etcd
+    Kubelet --> ApiServer
+    Kubelet --> ControllerManager
+    Kubelet --> Scheduler
+    ApiServer --> HelmController
+    HelmController --> BootstrapCharts
+    InternalCA -.trusts.-> PrivateRegistry
+    Hardening -.baselines.-> RKE2Binary
+    ImageControl -.gates.-> RuntimeImage
+    Policy -.governs.-> ApiServer
+```
 
-### Persistent Storage Control Plane and Volume Provisioning Path
+### Design Implications
 
-NetApp Trident provides the storage control-plane abstraction that maps Kubernetes PVC intent into backend ONTAP provisioning workflows across both NFS and iSCSI profiles. The presence of multiple storage classes, including late-binding variants, is architecturally significant: volume binding is deferred until scheduling context is known, which improves placement correctness for stateful workloads and reduces cross-node attachment conflicts. In the monitoring stack, iSCSI-backed persistent volumes for Prometheus and Alertmanager are used to support predictable IOPS and write durability under sustained metric ingestion pressure. Grafana now uses a dedicated PostgreSQL configuration database, also backed by persistent storage, to remove SQLite lock contention and establish a cleaner scale-up path for higher dashboard concurrency and eventual Grafana HA. The storage system is therefore not just capacity infrastructure; it is a performance and failure-domain control surface.
-
-Operationally, Trident also separates day-1 platform installation from day-2 storage policy tuning. Backend definitions, storage classes, and snapshot classes can evolve without rewriting application deployment logic, allowing platform teams to adapt provisioning behavior as workload profiles change. This is especially important in multi-cluster operations where retention settings, backup windows, and IO patterns differ between management and application clusters. By externalizing storage behavior into Trident policy artifacts, the platform keeps stateful services portable at the manifest level while still optimizing the physical storage path underneath.
-
-### Federated Observability Pipeline and Alerting Control Loop
-
-The monitoring system is designed as a federated control loop centered on the management cluster while still collecting high-fidelity telemetry from all service domains. Prometheus in mgmt-cluster is configured with remote write receiver capability and comprehensive ServiceMonitor and PodMonitor coverage, enabling both centralized querying and distributed scrape integration. This arrangement supports a clear operational boundary: application clusters expose metrics and state transitions, while the management cluster performs retention, rule evaluation, and incident signaling. The resulting pipeline minimizes blind spots during cross-cluster faults, because failure signals from ingress, service mesh, messaging, storage, and workloads are normalized into a shared time series corpus.
-
-Grafana and Alertmanager complete the feedback loop by turning telemetry into operator action. Dashboards provide cross-layer correlation views so teams can move from symptom to root cause without context switching across tools, while Alertmanager enforces routing and severity policy for actionable events. Grafana's configuration state is now externalized into PostgreSQL rather than remaining on embedded SQLite, which reduces metadata write contention and aligns the management plane with a more scalable operating model. The technical strength of this model is composability: as new exporters or monitored services are introduced, they can be onboarded through monitor resources and rule definitions without redesigning the entire observability architecture. In a platform that includes mesh policy, stateful replication, and site-level networking variation, this observability control loop is what makes the system operable under real failure conditions.
-
-### MongoDB Multi-Cluster Data Fabric and Replication Behavior
-
-MongoDB is deployed as a multi-cluster replica set coordinated by the MongoDB Kubernetes Operator, with lifecycle operations managed from the control domain and data replicas distributed across application clusters. This separation of concerns allows cluster-level automation to handle member health, reconciliation, and rolling updates while preserving the database replication semantics required for resilience. Cross-cluster replication traffic traverses mesh-enabled paths with TLS expectations, which means data-plane security and routing policies remain consistent with the broader platform transport model. The result is a data fabric that tolerates site disruptions more effectively than single-cluster stateful deployments, provided quorum and latency assumptions are continuously validated.
-
-The operator-centric model also standardizes day-2 database management: user creation, resource tuning, and topology updates are expressed declaratively rather than through ad hoc manual procedures. Exporter integration feeds replication lag and health metrics into Prometheus, allowing replication state to participate in the same alerting and incident workflow as infrastructure components. In practical terms, database reliability is no longer an isolated domain; it is integrated into platform-wide control loops for deployment, telemetry, and security. That integration is critical when application SLOs depend on both write durability and low-latency reads across geographically separated clusters.
-
-### NATS Messaging Substrate and Event Delivery Characteristics
-
-NATS provides the asynchronous messaging substrate for service-to-service decoupling, especially for Rocket.Chat-adjacent microservice workflows where transient backpressure and bursty event traffic are expected. The cluster configuration, exporter integration, and hardening values indicate an operational posture that treats messaging as core infrastructure rather than an optional add-on. Technically, this matters because queue depth, consumer lag, and connection churn often become the earliest indicators of downstream service stress. By instrumenting NATS and integrating those signals into centralized monitoring, the platform can detect systemic pressure before it manifests as user-visible outage.
-
-From a reliability perspective, NATS reduces direct dependency chains between producers and consumers, which improves failure isolation during partial site impairment. With proper policy around resource requests, network segmentation, and security contexts, the messaging tier can sustain localized failures while preserving eventual processing behavior for dependent services. This architecture also supports controlled evolution of application workflows: teams can introduce new consumers, replay logic, or processing tiers without forcing synchronous coupling to existing services. In a multi-cluster environment, that flexibility is a major contributor to both deployment velocity and operational resilience.
-
-### Rocket.Chat Runtime, Dependency Coupling, and Scaling Envelope
-
-Rocket.Chat in this platform is deployed as an application runtime that depends on both the persistent data plane (MongoDB) and the asynchronous control plane (NATS), while ingress and mesh layers mediate external and internal connectivity. This creates a composite scaling envelope: user-facing throughput is not governed by web pod count alone, but by combined behavior across ingress queueing, mesh sidecar overhead, message broker throughput, and replica-set response time. Consequently, performance engineering for Rocket.Chat must be treated as an end-to-end systems exercise. Resource right-sizing, connection pool behavior, and upstream timeout policy should be tuned with awareness of the whole dependency graph rather than isolated container metrics.
-
-Operationally, the service benefits from the platform’s declarative deployment model and observability controls. Health probes, rolling updates, and namespace policies can be managed consistently with other workloads, while telemetry from application pods can be correlated with NATS and MongoDB indicators to distinguish application defects from infrastructure bottlenecks. In distributed reference architecture environments, this alignment is essential: it allows release validation to capture realistic cross-component behavior before production promotion. Rocket.Chat is therefore not just the primary business workload; it is also an integration anchor that validates the fitness of the surrounding platform stack.
-
-### Identity, Access, and Authentication Plane with Keycloak
-
-Keycloak-related deployment artifacts in this repository show an identity plane designed for operator-managed lifecycle, environment-specific realm configuration, and optional bootstrap automation for federation and realm initialization. The technical architecture separates control concerns into install scripts, resource manifests, and bootstrap job logic, enabling identity configuration to be reproducible and versioned alongside the rest of the platform. This is a significant maturity marker because identity often drifts when managed through manual console-only workflows. By expressing realm, integration, and network policy state as code, the platform gains auditability and deterministic recovery characteristics.
-
-In system terms, Keycloak acts as the trust broker between users, applications, and external identity sources. When combined with namespace network policies and certificate management, it can provide a robust authentication path that remains consistent across cluster boundaries. The architectural challenge is maintaining least privilege and secret hygiene while supporting bootstrap and federation automation. The repository’s structure suggests an intent to evolve toward that posture by combining scripted installation, policy controls, and controlled bootstrap jobs. As this layer matures, it will increasingly determine how safely platform services can expose administrative and user-facing endpoints across environments.
+- Runtime images, Kubernetes component images, CNI images, and add-on charts must be mirrored and validated before bootstrap.
+- Server and agent nodes use the same distribution model, with behavior driven by configuration.
+- RKE2 helps reduce compliance drift because runtime, kubelet, and static pod lifecycle are predictable.
+- The private registry mirror is a mission-critical dependency and needs HA, backup, certificate, monitoring, and alerting treatment.
+- The platform team still owns configuration, patch cadence, registry hygiene, monitoring, backup, and policy enforcement.
 
 ---
 
 ## Cluster Topology
 
-### Cluster Network Topology
+The multi multi-node reference architecture uses four public-safe clusters.
 
-```mermaid
-flowchart TB
-    subgraph cluster_1_Networks["Network Topology"]
-        subgraph cluster_2_Site_AM_NET["mgmt-cluster<br/>Nodes: 192.0.2.10-192.0.2.19<br/>Storage: 203.0.113.10-203.0.113.17<br/>Restricted Ingress: 192.0.2.110-192.0.2.119"]
-            Site_AM_GW["East-West Gateway"]
-            Site_AM_LB["Contour LB<br/>198.51.100.15"]
-            Site_AM_MetalLB["MetalLB: 198.51.100.10-198.51.100.19<br/>Restricted Ingress: 198.51.100.110-198.51.100.119"]
-            Site_AM_GW["East-West Gateway"]
-            Site_AM_LB["Contour LB<br/>198.51.100.15"]
-            Site_AM_MetalLB["MetalLB: 198.51.100.10-198.51.100.19<br/>Restricted Ingress: 198.51.100.110-198.51.100.119"]
-        end
-        subgraph cluster_3_Site_AD_NET["app-cluster-a<br/>Nodes: 192.0.2.20-192.0.2.29<br/>Storage: 203.0.113.20-203.0.113.26<br/>Restricted Ingress: 192.0.2.120-192.0.2.129"]
-            Site_AD_GW["East-West Gateway"]
-            Site_AD_LB["Contour LB<br/>198.51.100.25"]
-            Site_AD_MetalLB["MetalLB: 198.51.100.20-198.51.100.29<br/>Restricted Ingress: 198.51.100.120-198.51.100.129"]
-            Site_AD_GW["East-West Gateway"]
-            Site_AD_LB["Contour LB<br/>198.51.100.25"]
-            Site_AD_MetalLB["MetalLB: 198.51.100.20-198.51.100.29<br/>Restricted Ingress: 198.51.100.120-198.51.100.129"]
-        end
-        subgraph cluster_4_Site_BD_NET["app-cluster-b<br/>Nodes: 192.0.2.30-192.0.2.39<br/>Storage: 203.0.113.30-203.0.113.36<br/>Restricted Ingress: 192.0.2.130-192.0.2.139"]
-            Site_BD_GW["East-West Gateway"]
-            Site_BD_LB["Contour LB<br/>198.51.100.35"]
-            Site_BD_MetalLB["MetalLB: 198.51.100.30-198.51.100.39<br/>Restricted Ingress: 198.51.100.130-198.51.100.139"]
-            Site_BD_GW["East-West Gateway"]
-            Site_BD_LB["Contour LB<br/>198.51.100.35"]
-            Site_BD_MetalLB["MetalLB: 198.51.100.30-198.51.100.39<br/>Restricted Ingress: 198.51.100.130-198.51.100.139"]
-        end
-        subgraph cluster_5_Site_CD_NET["app-cluster-c<br/>Nodes: 192.0.2.40-192.0.2.49<br/>Storage: 203.0.113.40-203.0.113.46<br/>Restricted Ingress: 192.0.2.140-192.0.2.149"]
-            Site_CD_GW["East-West Gateway"]
-            Site_CD_LB["Contour LB<br/>198.51.100.45"]
-            Site_CD_MetalLB["MetalLB: 198.51.100.40-198.51.100.49<br/>Restricted Ingress: 198.51.100.140-198.51.100.149"]
-            Site_CD_GW["East-West Gateway"]
-            Site_CD_LB["Contour LB<br/>198.51.100.45"]
-            Site_CD_MetalLB["MetalLB: 198.51.100.40-198.51.100.49<br/>Restricted Ingress: 198.51.100.140-198.51.100.149"]
-        end
-    end
-    Site_AM_GW <-.Mesh Traffic.-> Site_AD_GW
-    Site_AM_GW <-.Mesh Traffic.-> Site_BD_GW
-    Site_AM_GW <-.Mesh Traffic.-> Site_CD_GW
-    Site_AD_GW <-.Mesh Traffic.-> Site_BD_GW
-    Site_AD_GW <-.Mesh Traffic.-> Site_CD_GW
-    Site_BD_GW <-.Mesh Traffic.-> Site_CD_GW
-```
+| Cluster | Site | Role | Primary Functions |
+| --- | --- | --- | --- |
+| `mgmt-cluster` | Site A | Management | Rancher, central monitoring, Grafana, Alertmanager, Kiali integration, Argo CD, MongoDB control functions |
+| `app-cluster-a` | Site A | Application | Rocket.Chat, MongoDB members, NATS, Keycloak/application services |
+| `app-cluster-b` | Site B | Application | Application workloads and data replicas |
+| `app-cluster-c` | Site C | Application | Application workloads and data replicas |
 
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-03.svg) | [PNG](../diagrams/png/system-design-document-diagram-03.png)
+### Network Segment Model
 
+| Segment | Documentation IP Space | Purpose |
+| --- | --- | --- |
+| `out-of-band-mgmt` | `203.0.113.200-203.0.113.323` | Infrastructure management and lab OOB services |
+| `platform-net` | `192.0.2.0/24` | Kubernetes admin, cluster nodes, and platform services |
+| `storage-net` | `203.0.113.10-203.0.113.47` | Persistent volume storage traffic |
+| `restricted-ingress` | `198.51.100.128/25` | Segmented ingress and constrained workload exposure |
 
-### IP Address Allocation
+### Multi-Cluster IP Matrix
 
-#### Network Port Groups
+| Cluster | Node IP Range | Storage IP Range | Restricted Range | Platform VIP | Restricted VIP | Service CIDR | Pod CIDR |
+| --- | --- | --- | --- | ---: | ---: | --- | --- |
+| `mgmt-cluster` | `192.0.2.10-192.0.2.19` | `203.0.113.10-203.0.113.17` | `192.0.2.110-192.0.2.119` | `198.51.100.15` | `198.51.100.114` | `SERVICE-CIDR-MGMT` | `POD-CIDR-MGMT` |
+| `app-cluster-a` | `192.0.2.20-192.0.2.29` | `203.0.113.20-203.0.113.26` | `192.0.2.120-192.0.2.129` | `198.51.100.25` | `198.51.100.124` | `SERVICE-CIDR-APP-A` | `POD-CIDR-APP-A` |
+| `app-cluster-b` | `192.0.2.30-192.0.2.39` | `203.0.113.30-203.0.113.36` | `192.0.2.130-192.0.2.139` | `198.51.100.35` | `198.51.100.134` | `SERVICE-CIDR-APP-B` | `POD-CIDR-APP-B` |
+| `app-cluster-c` | `192.0.2.40-192.0.2.49` | `203.0.113.40-203.0.113.46` | `192.0.2.140-192.0.2.149` | `198.51.100.45` | `198.51.100.144` | `SERVICE-CIDR-APP-C` | `POD-CIDR-APP-C` |
 
-- **out-of-band-mgmt:** 203.0.113.200-203.0.113.323 (infrastructure management / lab out-of-band management services)
-- **platform-net:** 192.0.2.0/24 (Kubernetes Admin, Cluster Nodes, and App Services)
-- **storage-net:** 203.0.113.10-203.0.113.47 (Kubernetes Cluster Nodes for Persistent Volumes)
-- **restricted-ingress:** 198.51.100.128/25 (Kubernetes Cluster Nodes and App Services)
+### Node Inventory Pattern
 
-#### mgmt-cluster Cluster
-
-- **Node IPs (platform-net):** 192.0.2.10-192.0.2.19
-- **Storage IPs (storage-net):** 203.0.113.10-203.0.113.17
-- **Restricted Ingress IPs:** 192.0.2.110-192.0.2.119
-- **Platform MetalLB Pool:** 198.51.100.10-198.51.100.19
-- **Restricted Ingress MetalLB Pool:** 198.51.100.110-198.51.100.119
-- **Contour LoadBalancer (Domain):** 198.51.100.15
-- **Contour LoadBalancer (Restricted Ingress):** 198.51.100.114
-- **Cluster Service CIDR:** SERVICE-CIDR-MGMT
-- **Pod Network CIDR:** POD-CIDR-MGMT
-
-#### app-cluster-a Cluster
-
-- **Node IPs (platform-net):** 192.0.2.20-192.0.2.29
-- **Storage IPs (storage-net):** 203.0.113.20-203.0.113.26
-- **Restricted Ingress IPs:** 192.0.2.120-192.0.2.129
-- **Platform MetalLB Pool:** 198.51.100.20-198.51.100.29
-- **Restricted Ingress MetalLB Pool:** 198.51.100.120-198.51.100.129
-- **Contour LoadBalancer (Domain):** 198.51.100.25
-- **Contour LoadBalancer (Restricted Ingress):** 198.51.100.124
-- **Cluster Service CIDR:** SERVICE-CIDR-APP-A
-- **Pod Network CIDR:** POD-CIDR-APP-A
-
-#### app-cluster-b Cluster
-
-- **Node IPs (platform-net):** 192.0.2.30-192.0.2.39
-- **Storage IPs (storage-net):** 203.0.113.30-203.0.113.36
-- **Restricted Ingress IPs:** 192.0.2.130-192.0.2.139
-- **Platform MetalLB Pool:** 198.51.100.30-198.51.100.39
-- **Restricted Ingress MetalLB Pool:** 198.51.100.130-198.51.100.139
-- **Contour LoadBalancer (Domain):** 198.51.100.35
-- **Contour LoadBalancer (Restricted Ingress):** 198.51.100.134
-- **Cluster Service CIDR:** SERVICE-CIDR-APP-B
-- **Pod Network CIDR:** POD-CIDR-APP-B
-
-#### app-cluster-c Cluster
-
-- **Node IPs (platform-net):** 192.0.2.40-192.0.2.49
-- **Storage IPs (storage-net):** 203.0.113.40-203.0.113.46
-- **Restricted Ingress IPs:** 192.0.2.140-192.0.2.149
-- **Platform MetalLB Pool:** 198.51.100.40-198.51.100.49
-- **Restricted Ingress MetalLB Pool:** 198.51.100.140-198.51.100.149
-- **Contour LoadBalancer (Domain):** 198.51.100.45
-- **Contour LoadBalancer (Restricted Ingress):** 198.51.100.144
-- **Cluster Service CIDR:** SERVICE-CIDR-APP-C
-- **Pod Network CIDR:** POD-CIDR-APP-C
+| Cluster | Control Plane | Workers | Spare | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `mgmt-cluster` | 3 | 4 | 1 | Management and central observability capacity |
+| `app-cluster-a` | 3 | 3 | 1 | Site A application capacity |
+| `app-cluster-b` | 3 | 3 | 1 | Site B application capacity |
+| `app-cluster-c` | 3 | 3 | 1 | Site C application capacity |
 
 ---
 
-## Networking Architecture
+## Network and Ingress Architecture
 
-### Load Balancing Architecture
+The platform uses explicit traffic segmentation and two ingress planes. The point is not cosmetics; it is blast-radius control. A bad route or overly broad host rule on a restricted path should not land behind the same Envoy service and namespace as normal platform services.
+
+### Three-Network Node Model
 
 ```mermaid
-flowchart TB
-    subgraph cluster_1_External["External Traffic"]
-        Users["End Users"]
-        Users["End Users"]
-    end
-    subgraph cluster_2_LB["MetalLB Layer 2"]
-        MetalLB_Pool["IP Address Pools<br/>Layer 2 Advertisement"]
-        MetalLB_Pool["IP Address Pools<br/>Layer 2 Advertisement"]
-    end
-    subgraph cluster_3_Ingress["Contour Ingress"]
-        Envoy["Envoy DaemonSet<br/>LoadBalancer Type"]
-        ContourCtrl["Contour Controller"]
-        Envoy["Envoy DaemonSet<br/>LoadBalancer Type"]
-        ContourCtrl["Contour Controller"]
-    end
-    subgraph cluster_4_Mesh["Istio Service Mesh"]
-        EW_GW["East-West Gateway<br/>Cross-cluster Traffic"]
-        Sidecar["Envoy Sidecars<br/>Application Pods"]
-        EW_GW["East-West Gateway<br/>Cross-cluster Traffic"]
-        Sidecar["Envoy Sidecars<br/>Application Pods"]
-    end
-    subgraph cluster_5_Apps["Applications"]
-        RocketChat["Rocket.Chat Service"]
-        MongoDB["MongoDB Service"]
-        NATS["NATS Service"]
-        RocketChat["Rocket.Chat Service"]
-        MongoDB["MongoDB Service"]
-        NATS["NATS Service"]
-    end
-    Users --> MetalLB_Pool
-    MetalLB_Pool --> Envoy
-    Envoy --> ContourCtrl
-    ContourCtrl --> EW_GW
-    EW_GW --> Sidecar
-    Sidecar --> RocketChat
-    Sidecar --> MongoDB
-    Sidecar --> NATS
-    style MetalLB_Pool fill:#ffecb3
-    style Envoy fill:#c5cae9
-    style EW_GW fill:#c5cae9
-    style Sidecar fill:#c5cae9
+flowchart LR
+    Node[Kubernetes Node]
+    Node --> Platform[platform-net Management and Services]
+    Node --> Storage[storage-net Persistent Volume Traffic]
+    Node --> Restricted[restricted-ingress Segmented Exposure]
+
+    Platform --> API[Kubernetes API]
+    Platform --> MetalLB[MetalLB Platform VIPs]
+    Platform --> Istio[Istio Control Plane]
+    Storage --> ExternalStorage[External Storage]
+    Restricted --> RestrictedVIPs[Restricted VIPs]
 ```
 
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-04.svg) | [PNG](../diagrams/png/system-design-document-diagram-04.png)
+### Ingress Plane Separation
 
+| Plane | Namespace | IngressClass | Intended Use |
+| --- | --- | --- | --- |
+| `platform-ingress` | `platform-ingress` | `platform-ingress` | Core platform, management, shared platform, and standard developer access |
+| `restricted-ingress` | `restricted-ingress` | `restricted-ingress` | Segmented workload exposure and higher-risk test paths |
 
-### MetalLB Configuration
+### Required Guardrails
 
-**Controller Resources:**
+- `platform-ingress` may be the only default IngressClass.
+- `restricted-ingress` must not be marked default.
+- Every Ingress and HTTPProxy must explicitly declare the intended class.
+- Control-plane services such as Grafana, Prometheus, Alertmanager, and Kiali stay on `platform-ingress` unless segmented exposure is explicitly approved.
+- Do not share one hostname across platform and restricted ingress unless split-horizon behavior is deliberate and documented.
+- Add NetworkPolicies by namespace. Namespace separation does not become a real security boundary until policy follows.
 
-- CPU: 50m request / 500m limit
-- Memory: 50Mi request / 512Mi limit
+### Ingress VIP Summary
 
-**Speaker Configuration:**
+| Cluster | platform-ingress VIP | restricted-ingress VIP |
+| --- | ---: | ---: |
+| `mgmt-cluster` | `198.51.100.15` | `198.51.100.114` |
+| `app-cluster-a` | `198.51.100.25` | `198.51.100.124` |
+| `app-cluster-b` | `198.51.100.35` | `198.51.100.134` |
+| `app-cluster-c` | `198.51.100.45` | `198.51.100.144` |
 
-- Mode: Layer 2 Advertisement
-- FRR Integration: Enabled (v10.4.1)
-- CPU: 50m request / 500m limit
-- Memory: 50Mi request / 512Mi limit
+### Service Endpoint Summary
 
-### Contour Ingress
-
-**Deployment:**
-
-- Controller: 3 replicas
-- Envoy: DaemonSet mode
-- Service Type: LoadBalancer
+| Service | Endpoint | Protocol | Purpose |
+| --- | --- | --- | --- |
+| Application UI | `rocket.platform.example.internal` | HTTP/HTTPS | User-facing application service |
+| Internal registry | `registry.example.internal:8443` | HTTPS | Container image repository |
+| External storage NFS | `storage.example.internal` | NFS | File-backed persistent volumes |
+| External storage iSCSI | `storage.example.internal` | iSCSI | Block-backed persistent volumes |
+| Istio east-west gateway | Per-cluster LoadBalancer | mTLS | Cross-cluster service mesh traffic |
 
 ---
 
-## Security Architecture
+## Rancher Enterprise Management
 
-### Certificate Management
+Rancher Manager is the enterprise control point for all cluster categories. It provides centralized visibility, authentication integration, access governance, projects, applications, monitoring views, security posture visibility, and cluster lifecycle workflows. Each cluster still retains its own Kubernetes API, runtime, and failure domain.
 
 ```mermaid
 flowchart TB
-    subgraph cluster_1_PKI["PKI Infrastructure"]
-        RootCA["Root CA Secret<br/>platform-ca-secret-v1"]
-        ClusterIssuer["ClusterIssuer<br/>platform-ca-clusterissuer"]
-        RootCA["Root CA Secret<br/>platform-ca-secret-v1"]
-        ClusterIssuer["ClusterIssuer<br/>platform-ca-clusterissuer"]
+    subgraph Enterprise[Enterprise Control Plane]
+        IdP[Enterprise Identity]
+        Rancher[Rancher Manager]
+        Git[Git Repositories]
+        Registry[Internal Registry]
+        Observability[Observability Stack]
     end
-    subgraph cluster_2_CertMgr["cert-manager Components"]
-        Controller["cert-manager Controller"]
-        Webhook["cert-manager Webhook"]
-        CAInjector["CA Injector"]
-        Controller["cert-manager Controller"]
-        Webhook["cert-manager Webhook"]
-        CAInjector["CA Injector"]
+
+    subgraph Clusters[Managed Cluster Estate]
+        SMC[Single Multi-Node Cluster]
+        MMC[Multi Multi-Node Clusters]
+        SNC[Single-Node Clusters]
     end
-    subgraph cluster_3_Services["Service Certificates"]
-        IstioCerts["Istio CA Certificates<br/>Per Cluster"]
-        MongoDBCerts["MongoDB TLS Certificates"]
-        GrafanaCerts["Grafana TLS"]
-        IstioCerts["Istio CA Certificates<br/>Per Cluster"]
-        MongoDBCerts["MongoDB TLS Certificates"]
-        GrafanaCerts["Grafana TLS"]
-    end
-    Services["Services"]
-    RootCA --> ClusterIssuer
-    ClusterIssuer --> Controller
-    Controller --> IstioCerts
-    Controller --> MongoDBCerts
-    Controller --> GrafanaCerts
-    Webhook -.Validates.-> Controller
-    CAInjector -.Injects.-> Services
+
+    IdP --> Rancher
+    Rancher --> SMC
+    Rancher --> MMC
+    Rancher --> SNC
+    Git --> Rancher
+    Registry --> SMC
+    Registry --> MMC
+    Registry --> SNC
+    SMC --> Observability
+    MMC --> Observability
+    SNC --> Observability
 ```
 
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-05.svg) | [PNG](../diagrams/png/system-design-document-diagram-05.png)
+### Rancher UI Operating Areas
 
+| Area | Purpose | Enterprise Outcome |
+| --- | --- | --- |
+| Cluster Explorer | Inspect workloads, namespaces, nodes, storage, and events | Single pane of glass |
+| Cluster Management | Register, import, upgrade, and manage clusters | Standard lifecycle control |
+| Users and Authentication | Integrate enterprise identity and groups | Central access governance |
+| Projects and Namespaces | Group namespaces with delegated RBAC | Cleaner ownership model |
+| Apps and Charts | Deploy approved platform services | Controlled self-service |
+| Monitoring | View health and capacity | Faster incident triage |
+| Fleet | GitOps deployment to target clusters | Repeatable configuration |
+| Security and Policy | Run scans and enforce standards | Audit-ready operations |
 
-### Istio Security Architecture
+### Cluster Onboarding Flow
 
-**Multi-cluster Service Mesh Security:**
+```mermaid
+sequenceDiagram
+    participant Owner as Cluster Owner
+    participant Rancher as Rancher Manager
+    participant Cluster as Downstream Cluster
+    participant IdP as Enterprise Identity
+    participant Git as GitOps Source
 
-- **Mesh ID:** reference-mesh1
-- **Trust Domain:** cluster.local
-- **Certificate Signers:** clusterissuers.cert-manager.io/platform-ca-clusterissuer
-- **mTLS:** Enabled cluster-wide
-- **CA Certificates:** Unique per cluster (istio-{site}{cluster}-cacerts)
+    Owner->>Rancher: Create or import cluster
+    Rancher->>Cluster: Deploy cluster agent
+    Cluster->>Rancher: Register health and inventory
+    IdP->>Rancher: Provide users and groups
+    Rancher->>Cluster: Apply RBAC bindings
+    Git->>Rancher: Publish desired state
+    Rancher->>Cluster: Reconcile target bundles
+    Cluster->>Rancher: Report state
+```
 
-**Cross-cluster Authentication:**
+### Category-Specific Rancher Use
 
-- Service Account tokens exchanged between clusters
-- Remote secrets created for API server access
-- Secure east-west gateway communication (port 15443)
+| Cluster Category | Rancher Use | Guardrail |
+| --- | --- | --- |
+| Single multi-node cluster | Primary lifecycle, RBAC, projects, monitoring, apps | Use HA storage and redundant ingress. |
+| Multi multi-node clusters | Central estate management, Fleet targeting, cross-cluster visibility | Keep cluster labels and ownership clean. |
+| Single-node clusters | Import for visibility, policy, inventory, and lifecycle awareness | Do not market as HA. Backup is mandatory. |
 
-### Security Standards
+### Fleet Targeting Model
 
-Security hardening is implemented through the STIG automation workflow in `build/install/stigs/deploy-security-hardening.sh` and its supporting policy/value files.
+Use cluster labels such as `production=true`, `lab=true`, `site=site-a`, and `category=single-node` to target bundles cleanly. Label design matters; sloppy labels become sloppy deployments.
 
-#### STIGS Baseline Controls (Implemented)
+---
 
-| Control Area | Implementation Status | Evidence |
-| -------------- | ----------------------- | ---------- |
-| Pod security contexts | ✅ Implemented for NATS, Contour/Envoy, Prometheus stack | `build/sites/all/values/nats-cluster-values-v3.yaml`, `build/sites/*/values/contour-values-v4.yaml`, `build/sites/site-a/manager-cluster/values/kube-prometheus-server-values-mgmt-cluster-v9.yaml` |
-| Seccomp and least privilege | ✅ RuntimeDefault seccomp and capability drops applied in hardened values | same files as above |
-| Network segmentation | ✅ Namespace-specific NetworkPolicies defined for Rocket.Chat, MongoDB, NATS, Monitoring | `build/sites/all/resources/networkpolicy-*.yaml`, `build/sites/site-a/manager-cluster/resources/networkpolicy-monitoring-v1.yaml` |
-| Default-deny posture | ✅ Available, optional activation step in STIG script | `build/sites/all/resources/networkpolicy-default-deny-template.yaml` |
-| Namespace selector normalization | ✅ Namespace labels standardized for selector matching | `build/install/stigs/deploy-security-hardening.sh` (Step 4) |
+## Air-Gapped Image Supply Chain
 
-#### STIGS Deployment Sequence
+In an air-gapped Kubernetes environment, the image supply chain is a Tier-0 platform dependency. Missing images, inconsistent retagging, weak registry ownership, or untrusted certificates break downstream deployment automation.
 
-The STIG workflow currently runs a 9-step sequence:
+### Repository Ownership Model
 
-1. Harden NATS deployment (`nats-cluster-values-v3.yaml`)
-2. Harden Contour across all 4 clusters (`contour-values-v4.yaml`)
-3. Harden kube-prometheus-stack (`kube-prometheus-server-values-mgmt-cluster-v9.yaml`)
-4. Label namespaces for deterministic selectors
-5. Apply Rocket.Chat policies
-6. Apply MongoDB policies
-7. Apply NATS policies
-8. Apply Monitoring policies (mgmt-cluster)
-9. Optionally apply default-deny policies
+| Capability | Image promotion utility | Registry lifecycle utility | Platform deployment repo |
+| --- | --- | --- | --- |
+| Source image catalog | Owns | References | Consumes expected output |
+| Image list normalization | Owns | Does not own | Does not own |
+| Connected pull workflow | Owns | Does not own | Does not own |
+| Offline/internal push workflow | Owns | Delegates to registry endpoint | Consumes promoted images |
+| Registry install/runtime lifecycle | Does not own | Owns | Does not own |
+| TLS and client trust lifecycle | Requires working trust | Owns | Validates from nodes |
+| Helm/YAML deployment | Does not own | Does not own | Owns |
 
-#### Standards Posture
+### Standard Workflow
 
-- Runtime hardening controls are implemented at workload/chart level.
-- Namespace-level Pod Security Standards enforcement is not yet uniformly enforced cluster-wide and remains a planned hardening phase.
+1. Maintain source image lists for Kubernetes distribution components, add-ons, ingress, monitoring, service mesh, data services, and tools.
+2. Normalize and categorize image lists into public/no-auth, authenticated registry, archived, and aggregate manifests.
+3. Pull images while connected, using credentials only where required.
+4. Stage or deploy the internal registry before platform rollout.
+5. Retag and push images into the internal registry using a deterministic promotion mode.
+6. Validate image availability and registry trust from the target environment before cluster deployment.
 
-### RBAC Configuration
+### Registry Naming Contract
 
-**Service Accounts:**
+The preferred promotion mode strips the upstream registry prefix and places the image under the internal registry project or namespace. A preserve-registry mode can be used when upstream path collisions are a material risk.
 
-- cert-manager controller, webhook, cainjector
-- MetalLB controller, speaker
-- Contour controller, Envoy
-- Istio istiod, gateway
-- MongoDB Kubernetes Operator
-- Prometheus Operator
-- NATS
-- Rocket.Chat
+Platform manifests and Helm values must use the same mapping contract as the promotion workflow. If they drift, the cluster fails with image pull errors even when the registry is healthy.
 
-**Cluster-level Permissions:**
+### Pre-Deployment Gates
 
-- MongoDB Operator: cluster-admin role (multi-cluster management)
-- Prometheus: Cluster monitoring permissions
-- cert-manager: Certificate management across namespaces
+- Image manifest count matches the expected bill of materials.
+- No critical images remain in failed-pull or missing-image logs.
+- Internal registry projects/namespaces exist.
+- Push account permissions are correct.
+- Node runtime trusts the registry certificate chain.
+- At least one representative image pull succeeds from a target node.
+
+### Failure Modes
+
+| Failure | Likely Cause | Corrective Action |
+| --- | --- | --- |
+| Image pull errors | Manifests do not match internal registry promotion mode | Reconcile values/manifests with target mapping |
+| Push denied | Account lacks project or repository permissions | Use push-scoped or project-management credential |
+| Project creation fails | Service account cannot create registry projects | Use registry administrator or preflight project-management account |
+| TLS trust failure | Node runtime does not trust registry CA | Install CA in runtime trust store and restart runtime |
+| Missing pushed image | Source image skipped, failed, or normalized differently | Review pull/push logs and rerun workflow |
+
+Bottom line: production rollout should not be the first time the team discovers an image is missing. That failure class belongs in preflight.
 
 ---
 
 ## Storage Architecture
 
-### NetApp Trident Integration
+### Multi-Node Storage
+
+NetApp Trident provides the CSI storage abstraction for multi-node clusters. It maps Kubernetes PVC intent into backend storage provisioning workflows across file and block profiles. Late-binding storage classes improve placement correctness by deferring volume binding until the scheduler has workload context.
+
+Storage is not just capacity infrastructure. It is a performance and failure-domain control surface for Prometheus, Alertmanager, Grafana PostgreSQL, MongoDB, Keycloak PostgreSQL, and application state.
+
+### Single-Node Local Storage
+
+Single-node clusters may use local disks or mounted local paths for persistent volumes.
 
 ```mermaid
-flowchart TB
-    subgraph cluster_1_Storage["NetApp Storage System"]
-        SVM["Storage Virtual Machine<br/>tridentSVM"]
-        NFS_LIF["NFS Data LIF<br/>storage-data.example.internal"]
-        ISCSI_LIF["iSCSI LIF"]
-        SVM["Storage Virtual Machine<br/>tridentSVM"]
-        NFS_LIF["NFS Data LIF<br/>storage-data.example.internal"]
-        ISCSI_LIF["iSCSI LIF"]
+flowchart LR
+    subgraph Physical[Physical or Virtual Disks]
+        D1[Disk A]
+        D2[Disk B]
+        D3[Disk C]
     end
-    subgraph cluster_2_Trident["Trident Operator"]
-        TridentOp["Trident Operator<br/>v100.2602.0"]
-        NFSBackend["NFS Backend<br/>ontap-nas"]
-        iSCSIBackend["iSCSI Backend<br/>ontap-san"]
-        TridentOp["Trident Operator<br/>v100.2602.0"]
-        NFSBackend["NFS Backend<br/>ontap-nas"]
-        iSCSIBackend["iSCSI Backend<br/>ontap-san"]
+
+    subgraph Kubernetes[Kubernetes Storage]
+        Mounts[Mounted Paths]
+        PV[Local PersistentVolumes]
+        SC[StorageClass]
+        PVC[PersistentVolumeClaims]
+        Pods[Stateful Workloads]
     end
-    subgraph cluster_3_StorageClasses["Storage Classes"]
-        NFSLB["NFS Latebinding<br/>tridentsvm-nfs-latebinding"]
-        ISCSILB["iSCSI Latebinding<br/>tkg-work-storage-iscsi-latebinding"]
-        NFSLB["NFS Latebinding<br/>tridentsvm-nfs-latebinding"]
-        ISCSILB["iSCSI Latebinding<br/>tkg-work-storage-iscsi-latebinding"]
-    end
-    subgraph cluster_4_Workloads["Persistent Workloads"]
-        Prometheus["Prometheus<br/>150Gi iSCSI"]
-        Alertmanager["Alertmanager<br/>120Gi iSCSI"]
-        MongoDB["MongoDB<br/>NFS/iSCSI"]
-        NATS["NATS<br/>1Gi NFS"]
-        Prometheus["Prometheus<br/>150Gi iSCSI"]
-        Alertmanager["Alertmanager<br/>120Gi iSCSI"]
-        MongoDB["MongoDB<br/>NFS/iSCSI"]
-        NATS["NATS<br/>1Gi NFS"]
-    end
-    SVM --> NFS_LIF
-    SVM --> ISCSI_LIF
-    NFS_LIF --> NFSBackend
-    ISCSI_LIF --> iSCSIBackend
-    NFSBackend --> NFSLB
-    iSCSIBackend --> ISCSILB
-    NFSLB --> MongoDB
-    NFSLB --> NATS
-    ISCSILB --> Prometheus
-    ISCSILB --> Alertmanager
-    ISCSILB --> MongoDB
+
+    D1 --> Mounts
+    D2 --> Mounts
+    D3 --> Mounts
+    Mounts --> PV
+    SC --> PVC
+    PV --> PVC
+    PVC --> Pods
 ```
 
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-06.svg) | [PNG](../diagrams/png/system-design-document-diagram-06.png)
+### Local Storage Caveat
 
+Local persistent volumes bind workload availability to the health of the node and local disk. That is acceptable for labs and edge-style validation, but it requires backup, restore, and rebuild testing before stateful workloads are promoted.
 
-### Storage Backend Configuration
+---
 
-**NFS Backend (ontap-nas):**
+## Security Architecture
 
-- Driver: ontap-nas
-- Management LIF: storage.example.internal
-- Data LIF: storage-data.example.internal
-- SVM: tridentSVM
-- Auto Export Policy: Enabled
-- Credentials: Kubernetes Secret (tridentsvm-credentials-secret)
+The current security baseline includes hardened pod security contexts, namespace-segmented NetworkPolicies, expanded default-deny automation coverage, ingress separation, and stronger monitoring access controls.
 
-**iSCSI Backend (ontap-san):**
+**Current Risk Level:** Medium — network segmentation and security contexts are enforced, with remaining hardening gaps.  
+**Target Risk Level:** Low — strict mesh mTLS, NATS TLS default-on, Pod Security Admission enforcement, and default-deny policy coverage completed.
 
-- Driver: ontap-san
-- Management LIF: storage.example.internal
-- SVM: tridentSVM
-- CHAP: Not configured (recommended to enable)
-- Credentials: Kubernetes Secret (tridentsvm-credentials-secret)
+### Implemented Controls
 
-### Storage Classes
+| Control | Current Posture |
+| --- | --- |
+| runAsNonRoot | Enforced on hardened application and infrastructure workloads |
+| Linux capabilities | Drop ALL by default, add only required capabilities |
+| seccomp | RuntimeDefault profile enforced |
+| privilege escalation | `allowPrivilegeEscalation: false` where supported |
+| NetworkPolicies | Application and infrastructure allow policies present |
+| default deny | Template and automation available; rollout requires validation |
+| namespace segmentation | Platform, restricted, monitoring, application, data, and messaging namespaces separated |
+| Kiali/Grafana access | Uses routed HTTPS FQDNs and Grafana service-account token |
 
-| Storage Class | Provisioner | Access Mode | Use Case |
-| --------------- | ------------- | ------------- | ---------- |
-| tridentsvm-nfs-latebinding | ontap-nas | RWX | Shared storage, NATS |
-| tkg-work-storage-iscsi-latebinding | ontap-san | RWO | Block storage, databases |
-| tkg-work-storage-latebinding | N/A | RWO | General purpose |
+### NetworkPolicy Coverage
+
+| Namespace / Area | Policy Intent |
+| --- | --- |
+| Rocket.Chat | Allow ingress from ingress controller and metrics; egress to MongoDB, NATS, DNS, Kubernetes API, and mesh paths |
+| MongoDB | Allow application queries, operator management, replica communication, exporter metrics, and mesh gateway replication paths |
+| NATS | Allow application clients, cluster routes, exporter metrics, and DNS |
+| Monitoring | Allow Grafana, Prometheus, Alertmanager, Kiali integration, remote write, web UI, DNS, and Kubernetes API paths |
+| Keycloak | Constrain realm/application paths and database egress with namespace/pod scoped policies |
+| Default deny | Deny all ingress and egress, then layer DNS and explicit allow policies |
+
+### Security Deployment Phases
+
+| Phase | Action | Risk |
+| --- | --- | --- |
+| 1 | Deploy security contexts | Low |
+| 2 | Deploy application NetworkPolicies | Medium |
+| 3 | Deploy default-deny policies | High unless all dependencies are mapped |
+
+### Remaining Security Backlog
+
+1. Replace Kiali anonymous UI authentication before exposing it outside a sealed admin lab.
+2. Add default-deny NetworkPolicies directly to platform and restricted ingress namespaces.
+3. Add explicit allow lists for Envoy ingress to backend namespaces.
+4. Codify Istio mesh-wide strict mTLS with namespace-specific exceptions where required.
+5. Enforce Pod Security Admission labels instead of leaving them as commented guidance.
 
 ---
 
 ## Service Mesh Architecture
 
-### Istio Multi-cluster Configuration
+Istio provides traffic management, workload identity, mTLS, telemetry, and east-west gateway connectivity. The platform uses revision-based injection and should avoid mixing `istio.io/rev` with legacy `istio-injection` labels.
 
-```mermaid
-flowchart TB
-    subgraph cluster_1_MeshConfig["Istio Multi-cluster Mesh"]
-        subgraph cluster_2_Primary["Primary Cluster - mgmt-cluster"]
-            P_Istiod["Istiod<br/>Control Plane"]
-            P_Gateway["East-West Gateway"]
-            P_Kiali["Kiali Server"]
-            P_Istiod["Istiod<br/>Control Plane"]
-            P_Gateway["East-West Gateway"]
-            P_Kiali["Kiali Server"]
-        end
-        subgraph cluster_3_Remote1["Remote - app-cluster-a"]
-            R1_Istiod["Istiod<br/>Control Plane"]
-            R1_Gateway["East-West Gateway"]
-            R1_Istiod["Istiod<br/>Control Plane"]
-            R1_Gateway["East-West Gateway"]
-        end
-        subgraph cluster_4_Remote2["Remote - app-cluster-b"]
-            R2_Istiod["Istiod<br/>Control Plane"]
-            R2_Gateway["East-West Gateway"]
-            R2_Istiod["Istiod<br/>Control Plane"]
-            R2_Gateway["East-West Gateway"]
-        end
-        subgraph cluster_5_Remote3["Remote - app-cluster-c"]
-            R3_Istiod["Istiod<br/>Control Plane"]
-            R3_Gateway["East-West Gateway"]
-            R3_Istiod["Istiod<br/>Control Plane"]
-            R3_Gateway["East-West Gateway"]
-        end
-    end
-    P_Istiod <-.API Access<br/>Remote Secret.-> R1_Istiod
-    P_Istiod <-.API Access<br/>Remote Secret.-> R2_Istiod
-    P_Istiod <-.API Access<br/>Remote Secret.-> R3_Istiod
-    R1_Istiod <-.Mutual<br/>Discovery.-> R2_Istiod
-    R1_Istiod <-.Mutual<br/>Discovery.-> R3_Istiod
-    R2_Istiod <-.Mutual<br/>Discovery.-> R3_Istiod
-    P_Gateway <-.15443.-> R1_Gateway
-    P_Gateway <-.15443.-> R2_Gateway
-    P_Gateway <-.15443.-> R3_Gateway
-    R1_Gateway <-.15443.-> R2_Gateway
-    R1_Gateway <-.15443.-> R3_Gateway
-    R2_Gateway <-.15443.-> R3_Gateway
-```
+### Sidecar Placement Policy
 
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-07.svg) | [PNG](../diagrams/png/system-design-document-diagram-07.png)
+| Namespace / Workload | Sidecar Policy | Reason |
+| --- | --- | --- |
+| Rocket.Chat application pods | Injected | Application traffic should be visible in Kiali and Istio telemetry |
+| Keycloak pods | Explicit pod-level injection | Application workload, but namespaces also contain platform dependencies |
+| Istio east-west gateways | Injected by gateway chart | Gateway workloads are part of the data plane |
+| `istio-system` control-plane pods | Not injected | istiod, Kiali, and operators are control-plane components |
+| `monitoring` | Not injected | Observability services should not become mesh workload noise by default |
+| `metallb-system` | Not injected | Infrastructure component with native metrics |
+| `nats-system` | Not injected | Uses chart-native protocol and exporter |
+| `mongodb` / `mongodb-operator` | Not injected | Uses operator-managed TLS and database-specific monitoring |
+| Contour/Envoy namespaces | Not injected | L7 ingress controllers are separate from Istio sidecar data plane |
 
+### East-West Gateway Pattern
 
-### Mesh Networks Configuration
-
-| Network | Cluster | Gateway Address (Domain) | Gateway Address (Restricted Ingress) | Port |
-| --------- | --------- | ------------------------- | ---------------------------- | ------ |
-| mgmt-net | mgmt-cluster | Via MetalLB Pool | Via MetalLB Pool | 15443 |
-| app-a-net | app-cluster-a | Via MetalLB Pool | Via MetalLB Pool | 15443 |
-| app-b-net | app-cluster-b | Via MetalLB Pool | Via MetalLB Pool | 15443 |
-| app-c-net | app-cluster-c | Via MetalLB Pool | Via MetalLB Pool | 15443 |
-
-**Note:** East-west gateways use LoadBalancer services assigned from MetalLB pools. platform network uses platform-net IPs (198.51.100.x), while restricted-ingress uses alternative network IPs (198.51.100.x).
-
-### Istio Components Resources
-
-**Istiod (Control Plane):**
-
-- CPU: 100m request / 1000m limit
-- Memory: 128Mi request / 1024Mi limit
-- Logging Level: debug
-- Revision: stable
-
-**East-West Gateway:**
-
-- Deployment per cluster
-- Dedicated gateway for cross-cluster traffic
-- Port 15443 (TLS)
-
-**Proxy (Sidecars):**
-
-- CPU: 100m request / 1000m limit
-- Memory: 128Mi request / 512Mi limit
-- Log Level: debug
-
-### Kiali Visualization
-
-**Deployment:**
-
-- Kiali Operator: 2.13.0
-- Kiali Server: 2.13.0
-- Namespace: istio-system
-- Provides service mesh topology and health visualization
+Service mesh east-west gateways expose constrained cross-cluster traffic, commonly on port `15443`, through per-cluster LoadBalancer services. Cross-cluster traffic must preserve certificate trust and identity semantics.
 
 ---
 
 ## Monitoring and Observability
 
-### Monitoring Architecture
+The monitoring design uses Prometheus Agent in every cluster, remote-writing to the central Prometheus server in `mgmt-cluster`. Grafana uses PostgreSQL for configuration state. Alertmanager handles alert routing. Kiali integrates with central Prometheus and Grafana using routable HTTPS endpoints.
 
-```mermaid
-flowchart TB
-    subgraph cluster_1_Central["Central Monitoring - mgmt-cluster"]
-        Prom_Central["Prometheus<br/>Central Federation"]
-        Grafana["Grafana Dashboards"]
-        Alert["Alertmanager"]
-        KubeSM["kube-state-metrics"]
-        NodeExp["node-exporter"]
-        Prom_Central["Prometheus<br/>Central Federation"]
-        Grafana["Grafana Dashboards"]
-        Alert["Alertmanager"]
-        KubeSM["kube-state-metrics"]
-        NodeExp["node-exporter"]
-    end
-    subgraph cluster_2_Agents["Remote Clusters"]
-        Prom_Site_AD["Prometheus<br/>app-cluster-a"]
-        Prom_Site_BD["Prometheus<br/>app-cluster-b"]
-        Prom_Site_CD["Prometheus<br/>app-cluster-c"]
-        Prom_Site_AD["Prometheus<br/>app-cluster-a"]
-        Prom_Site_BD["Prometheus<br/>app-cluster-b"]
-        Prom_Site_CD["Prometheus<br/>app-cluster-c"]
-    end
-    subgraph cluster_3_Targets["Monitoring Targets"]
-        subgraph cluster_4_Infra["Infrastructure"]
-            Kubelet["Kubelet/cAdvisor"]
-            CoreDNS["CoreDNS"]
-            CertMgr["cert-manager"]
-            MetalLB["MetalLB"]
-            Contour["Contour"]
-            Kubelet["Kubelet/cAdvisor"]
-            CoreDNS["CoreDNS"]
-            CertMgr["cert-manager"]
-            MetalLB["MetalLB"]
-            Contour["Contour"]
-        end
-        subgraph cluster_5_Mesh["Service Mesh"]
-            Istio["Istio Proxies"]
-            Istio["Istio Proxies"]
-        end
-        subgraph cluster_6_Apps["Applications"]
-            MongoDB["MongoDB Exporters"]
-            NATS["NATS Exporters"]
-            RocketChat["Rocket.Chat Metrics"]
-            MongoDB["MongoDB Exporters"]
-            NATS["NATS Exporters"]
-            RocketChat["Rocket.Chat Metrics"]
-        end
-    end
-    subgraph cluster_7_Dashboards["Grafana Dashboards"]
-        RC_SLO["Rocket.Chat SLO"]
-        Mongo_SLO["MongoDB SLO"]
-        Edge_SLO["Edge SLO"]
-        RC_SLO["Rocket.Chat SLO"]
-        Mongo_SLO["MongoDB SLO"]
-        Edge_SLO["Edge SLO"]
-    end
-    subgraph cluster_8_Alerts["Alert Rules"]
-        Mongo_Alerts["MongoDB Alerts"]
-        RC_Alerts["Rocket.Chat Alerts"]
-        MetalLB_Alerts["MetalLB Alerts"]
-        Mongo_Alerts["MongoDB Alerts"]
-        RC_Alerts["Rocket.Chat Alerts"]
-        MetalLB_Alerts["MetalLB Alerts"]
-    end
-    Infra["Infra"]
-    Mesh["Mesh"]
-    Apps["Apps"]
-    Dashboards["Dashboards"]
-    Alerts["Alerts"]
-    Prom_Site_AD -.Remote Write.-> Prom_Central
-    Prom_Site_BD -.Remote Write.-> Prom_Central
-    Prom_Site_CD -.Remote Write.-> Prom_Central
-    Prom_Central -.Scrapes.-> KubeSM
-    Prom_Central -.Scrapes.-> NodeExp
-    Prom_Central -.Scrapes.-> Infra
-    Prom_Central -.Scrapes.-> Mesh
-    Prom_Central -.Scrapes.-> Apps
-    Prom_Central --> Grafana
-    Prom_Central --> Alert
-    Grafana --> Dashboards
-    Prom_Central --> Alerts
+### Metrics Coverage
+
+| Area | Collection Pattern |
+| --- | --- |
+| Kubernetes core | kube-state-metrics, node-exporter, kubelet, cAdvisor |
+| Istio control plane | `istiod` ServiceMonitor |
+| Istio gateways | Gateway metrics endpoint |
+| Istio sidecars | PodMonitor selecting injected pods |
+| Rocket.Chat | Chart-native PodMonitor |
+| NATS | Prometheus exporter PodMonitor |
+| MetalLB | Chart-provided ServiceMonitors enabled after monitoring CRDs exist |
+| MongoDB operator | Explicit ServiceMonitor |
+| MongoDB database internals | Backlog: enable MongoDB CR `spec.prometheus` and credentials |
+| Keycloak | Keycloak CR `serviceMonitor` setting |
+| PostgreSQL internals | Backlog: add postgres exporter pattern |
+
+### Monitoring Baseline Updates
+
+- Grafana uses dedicated PostgreSQL in the `monitoring` namespace.
+- Prometheus and Alertmanager use native storage models and are not moved to PostgreSQL.
+- Kiali reaches central Grafana and Prometheus through routable `platform.example.internal` HTTPS endpoints, not cross-cluster `.svc` DNS.
+- Kiali uses a Grafana service-account token stored in a `kiali-grafana-credentials` Secret in each cluster's `istio-system` namespace.
+- Prometheus central TSDB uses `walCompression: true` and an explicit `retentionSize` below PVC capacity.
+
+### Known Observability Backlog
+
+1. Add PostgreSQL exporter coverage for database-level internals such as connection count, locks, cache hit ratio, and slow query indicators.
+2. Enable MongoDB database/member metrics with credentials and matching ServiceMonitor wiring.
+3. Add Prometheus cardinality dashboards and alerts before onboarding more services.
+4. Add Alertmanager receiver configuration and test routing end-to-end.
+
+---
+
+## Application and Data Platform
+
+### Rocket.Chat
+
+Rocket.Chat is the primary application workload and validates the surrounding platform stack. It depends on MongoDB for persistence, NATS for asynchronous/event paths, ingress for external access, mesh for workload traffic control where enabled, and Prometheus for telemetry.
+
+### MongoDB
+
+MongoDB is deployed as a multi-cluster data fabric managed by the MongoDB Kubernetes Operator. The reference model distributes replica set members across application clusters and uses Ops Manager for lifecycle management. Database reliability is integrated into the platform control loops for deployment, telemetry, and security.
+
+### NATS
+
+NATS provides the asynchronous messaging substrate. Exporter metrics and policy controls make queue depth, connection churn, and message rates visible to the platform before they become application outages.
+
+### Keycloak
+
+Keycloak provides the identity plane for users, applications, and external identity sources. Realm configuration should remain versioned, reproducible, and tied to policy controls. Pod-level sidecar injection is preferred over broad namespace injection where identity namespaces contain supporting dependencies.
+
+---
+
+## Configuration and Resource Baseline
+
+The current baseline targets a 3k-5k continuous user reference range.
+
+### Workload Defaults
+
+| Area | Baseline |
+| --- | --- |
+| Contour | `replicaCount: 3` with explicit Contour and Envoy resources |
+| Rocket.Chat | `replicaCount: 4`, `minAvailable: 4`, microservices at 3 replicas each |
+| Rocket.Chat HPAs | Main, DDP streamer, presence, account, authorization, stream hub |
+| Keycloak | 3 instances per referenced realm, 1 CPU/2Gi request, 2 CPU/4Gi limit |
+| MongoDB | 2 members per application cluster; secondary vote configuration added |
+| Ops Manager | 2 replicas, application database members increased |
+| Monitoring | Explicit Prometheus CPU limits by manager/application cluster profile |
+| Trident Protect | Explicit controller and job default resources |
+
+### Minimum Baseline Subtotals
+
+| Workload Tier | Scale Assumption | Requested CPU | Requested Memory | Limit CPU | Limit Memory |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Ingress Contour | 3 replicas x 4 clusters | 3.00 | 4.5Gi | 12.00 | 12Gi |
+| Ingress Envoy minimum | 1 pod x 4 clusters | 2.00 | 2Gi | 8.00 | 6Gi |
+| Rocket.Chat | base replicas | 5.50 | 15.5Gi | 20.00 | 31Gi |
+| Keycloak | 4 deployments x 3 instances | 12.00 | 24Gi | 24.00 | 48Gi |
+| MongoDB + Ops Manager | multicluster + opsmanager | 8.80 | 23Gi | 32.00 | 64Gi |
+| Monitoring | 1 manager + 3 application clusters | 1.90 | 7Gi | 12.00 | 18Gi |
+| Mongo Express | 1 pod x 4 clusters | 0.40 | 0.5Gi | 2.00 | 2Gi |
+| Trident Protect | controller + 1 concurrent job | 1.25 | 2.5Gi | 6.00 | 10Gi |
+| **Grand Total** | all tiers combined | **34.85** | **79Gi** | **116.00** | **191Gi** |
+
+### Full 5k User Capacity Target
+
+| Capacity Target | Requested CPU | Requested Memory | Limit CPU | Limit Memory |
+| --- | ---: | ---: | ---: | ---: |
+| Minimum baseline | 34.85 | 79Gi | 116.00 | 191Gi |
+| Full 5k target | 51.35 | 137.5Gi | 188.00 | 308Gi |
+
+Recommended planning headroom for stable operations at 5k is at least 20% above requests: about 61.6 allocatable CPU cores and 165Gi allocatable memory.
+
+---
+
+## Scheduling and Disruption Policy
+
+The scheduling posture spreads replicated workloads where it matters, avoids hard scheduling deadlocks, and keeps node drains from turning into platform outages.
+
+| Workload Area | Scheduling Policy | Disruption Policy |
+| --- | --- | --- |
+| Rocket.Chat core | Soft pod anti-affinity by hostname | Main deployment allows one voluntary disruption |
+| Rocket.Chat microservices | Soft pod anti-affinity by service | Explicit PDBs with `maxUnavailable: 1` |
+| Contour control plane | Soft anti-affinity plus hostname topology spread | Explicit PDB with `maxUnavailable: 1` |
+| Envoy ingress data plane | DaemonSet placement | No PDB; DaemonSet/node lifecycle handles placement |
+| NATS | Hostname topology spread | PDB enabled, `maxUnavailable: 1` |
+| Keycloak realms | Host anti-affinity plus topology spread | Explicit PDB with `maxUnavailable: 1` |
+| PostgreSQL singletons | No artificial PDB | Single-replica databases must remain drain-able |
+| Prometheus / Alertmanager / Grafana singletons | No artificial PDB | Single-replica monitoring services should not block maintenance |
+| MongoDBMultiCluster members | One member per Kubernetes cluster | Resiliency comes from multi-cluster replica set design |
+
+A PDB that requires every replica to remain available looks resilient on paper but blocks voluntary disruption. Drain-safe policy is the better engineering trade.
+
+---
+
+## Operations and Validation
+
+### Common Cluster Operations
+
+```bash
+kubectl config get-contexts
+kubectl config use-context mgmt-cluster
+kubectl get nodes -o wide
+kubectl get pods -A | grep -v Running
+kubectl top nodes
+kubectl top pods -A
 ```
 
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-08.svg) | [PNG](../diagrams/png/system-design-document-diagram-08.png)
+### Ingress Validation
 
+```bash
+for ctx in mgmt-cluster app-cluster-a app-cluster-b app-cluster-c; do
+  echo "===== ${ctx} ====="
+  kubectl --context "${ctx}" get ingressclass
+  kubectl --context "${ctx}" get svc -n platform-ingress
+  kubectl --context "${ctx}" get svc -n restricted-ingress
+  kubectl --context "${ctx}" get ingress -A
+  kubectl --context "${ctx}" get httpproxy -A 2>/dev/null || true
+  echo
+done
+```
 
-### Prometheus Configuration (mgmt-cluster)
+Expected state:
 
-**Resource Allocation:**
+- `platform-ingress` exists and may be default.
+- `restricted-ingress` exists and is not default.
+- Every exposed object declares the intended ingress class.
 
-- CPU: 1 core request / 6 cores limit
-- Memory: 4Gi request / 12Gi limit
-- Replicas: 1
+### Service Mesh Validation
 
-**Storage:**
+```bash
+kubectl get pods -n istio-system
+kubectl get svc -n istio-system | grep eastwest
+istioctl proxy-status
+istioctl analyze -A
+```
 
-- Type: Persistent Volume (iSCSI)
-- Size: 150Gi
-- Storage Class: tkg-work-storage-iscsi-latebinding
-- Retention: 8d
+Expected state:
 
-**Scrape Configuration:**
+- Infrastructure namespaces are not broadly sidecar-injected.
+- Application workloads that require mesh behavior have sidecars.
+- ServiceMonitor and PodMonitor objects exist for the platform components that should be scraped.
 
-- Scrape Interval: 15s
-- Scrape Timeout: 10s
-- Evaluation Interval: 15s
-- Remote Write Receiver: Enabled
+### Monitoring Validation
 
-**Features:**
+```bash
+kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+kubectl get servicemonitor -A
+kubectl get podmonitor -A
+kubectl get prometheusrule -A
+```
 
-- Remote write receiver endpoint published at `https://prometheus-rw.platform.example.internal/api/v1/write`
-- Cluster labeling is injected via `additionalScrapeConfigs` relabeling (`cluster: mgmt-cluster`)
+Grafana PostgreSQL mode check:
 
-### ServiceMonitors Configured
+```bash
+kubectl --context mgmt-cluster -n monitoring exec deploy/mgmt-cluster-server-grafana -- \
+  printenv GF_DATABASE_TYPE GF_DATABASE_HOST GF_DATABASE_NAME
+```
 
-| Name | Namespace | Selector | Endpoint | Interval |
-| ------ | ----------- | ---------- | ---------- | ---------- |
-| **rocketchat** | rocketchat | app.kubernetes.io/name: rocketchat | /metrics | 30s |
-| **mongodb-rocketchat** | mongodb | app.kubernetes.io/name: mongodb-exporter | /metrics | 30s |
-| **metallb-controller** | metallb-system | component: controller | /metrics | 30s |
-| **metallb-speaker** | metallb-system | component: speaker | /metrics | 30s |
-| **nats-exporter** | nats-system | app.kubernetes.io/name: prometheus-nats-exporter | /metrics | 15s |
-| **cert-manager** | cert-manager | app.kubernetes.io/name: cert-manager | /metrics | 30s |
-| **contour** | contour | app.kubernetes.io/name: contour | /metrics | 30s |
-| **istiod** | istio-system | app=istiod, istio.io/rev=stable | /metrics | 15s |
-| **Istio sidecars** | app namespaces | `security.istio.io/tlsMode=istio` | /stats/prometheus | 15s |
-| **istio-eastwestgateway** | istio-system | selector key `istio` exists | /stats/prometheus | 15s |
+Expected database type: `postgres`.
 
-### PodMonitors Configured
+### Storage Validation
 
-| Name | Namespaces | Selector | Endpoint | Interval |
-| ------ | ------------ | ---------- | ---------- | ---------- |
-| **istio-proxies** | ALL | istio-prometheus-scrape: 'true' | /stats/prometheus | 15s |
+```bash
+kubectl get sc
+kubectl get pvc -A
+kubectl get pods -n trident-system
+kubectl logs -n trident-system deploy/trident-operator-controller
+```
 
-### Kubelet Monitoring
+### Security Validation
 
-**Enabled Components:**
+```bash
+kubectl get ns -L pod-security.kubernetes.io/enforce
+kubectl get networkpolicy -A
+kubectl get clusterrolebindings
+kubectl auth can-i --list --as=system:serviceaccount:<namespace>:<serviceaccount>
+```
 
-- kubelet metrics
-- cAdvisor metrics (15s interval, 7s timeout)
-- Resource metrics
-- Track timestamps staleness: false
+### Resource Coverage Check
 
-### Grafana Configuration
+```bash
+python3 - <<'PY'
+import pathlib, yaml
+kinds={'Deployment','StatefulSet','DaemonSet','Job','CronJob'}
+for p in pathlib.Path('build').rglob('*.yaml'):
+    try:
+        docs=list(yaml.safe_load_all(p.read_text()))
+    except Exception:
+        continue
+    for d in docs:
+        if not isinstance(d,dict) or d.get('kind') not in kinds:
+            continue
+        spec=d.get('spec',{})
+        tpl=spec.get('template',{})
+        if d.get('kind')=='CronJob':
+            tpl=spec.get('jobTemplate',{}).get('spec',{}).get('template',{})
+        ps=tpl.get('spec',{})
+        for c in ps.get('initContainers',[])+ps.get('containers',[]):
+            if 'resources' not in c:
+                print(p, d.get('kind'), d.get('metadata',{}).get('name'), c.get('name'))
+PY
+```
 
-**Resource Allocation:**
-
-- CPU: 100m request / 500m limit
-- Memory: 256Mi request / 1Gi limit
-
-**Configuration:**
-
-- Domain: grafana.platform.example.internal
-- Root URL: <https://grafana.platform.example.internal>
-- Admin Credentials: Kubernetes Secret (grafana-admin-credentials)
-
-**Sidecar Configuration:**
-
-- Dashboards: Enabled (label: grafana_dashboard)
-- Datasources: Enabled
-- Search Namespace: ALL
-
-### Alertmanager Configuration
-
-**Resource Allocation:**
-
-- CPU: 100m request / 500m limit
-- Memory: 128Mi request / 512Mi limit
-- Replicas: 1
-
-**Storage:**
-
-- Type: Persistent Volume (iSCSI)
-- Size: 120Gi
-- Storage Class: tkg-work-storage-iscsi-latebinding
-- Retention: 120h
-
-### Monitoring Dashboards
-
-#### Rocket.Chat SLO Dashboard
-
-**Metrics:**
-
-- API Availability (5xx error budget)
-- API Latency p95
-- API 5xx Error Rate
-- Request duration histograms
-
-**Queries:**
+### Prometheus Query Starters
 
 ```promql
-# Availability
-100 - (100 * sum(rate(http_requests_total{job="rocketchat",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="rocketchat"}[5m])))
-
-# P95 Latency
-histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="rocketchat",route=~"/api/.*"}[5m])))
-```
-
-#### MongoDB SLO Dashboard
-
-**Metrics:**
-
-- Replication Lag p95 (seconds)
-- Replication Lag per Member
-- Active Connections
-- Replica Set Health
-
-**Queries:**
-
-```promql
-# Replication Lag
-quantile_over_time(0.95, max by (cluster, replicaset) (mongodb_mongod_replset_member_replication_lag{app_kubernetes_io_instance="rocketchat"})[1h])
-```
-
-### Alert Rules
-
-Two rule bundles are maintained under `build/monitoring/rules`:
-
-- `prometheus-multicluster-infrastructure-alerts.yaml`
-- `prometheus-multicluster-app-alerts.yaml`
-
-Current rule groups and coverage:
-
-- `nats.rules`: NATSServerDown, NATSSlowConsumers, NATSHighMessageRate, NATSConnectionsHigh
-- `contour.rules`: ContourBackendUnhealthy, ContourHighErrorRate, ContourHighLatency
-- `istio-control-plane.rules`: IstiodDown, IstioPilotPushErrors, IstioCertificateExpiringSoon, IstioProxyVersionMismatch
-- `storage.rules`: PersistentVolumeNearFull, PersistentVolumeFull, TridentBackendUnhealthy
-- `cert-manager.rules`: CertManagerCertificateExpiringSoon, CertManagerCertificateExpired, CertManagerACMEAccountRegistrationFailed
-- `mongodb-operator.rules`: MongoDBOperatorDown, MongoDBOperatorReconcileErrors
-- `mongodb-replication.rules`: MongoReplicationLagHigh, MongoReplicationLagCritical
-- `rocketchat-api.rules`: RocketChatApiLatencyHigh, RocketChatApiErrorRateHigh
-- `metallb-bgp.rules`: MetalLBBgpSessionDown, MetalLBBgpSessionFlapping
-
-Representative expressions from application and edge groups:
-
-#### MongoDB Replication Alerts
-
-**MongoReplicationLagHigh (Warning):**
-
-```yaml
-expr: max by (cluster, replicaset) (mongodb_mongod_replset_member_replication_lag{app_kubernetes_io_instance="rocketchat"}) > 10
-for: 5m
-severity: warning
-```
-
-**MongoReplicationLagCritical (Critical):**
-
-```yaml
-expr: max by (cluster, replicaset) (mongodb_mongod_replset_member_replication_lag{app_kubernetes_io_instance="rocketchat"}) > 60
-for: 5m
-severity: critical
-```
-
-#### Rocket.Chat API Alerts
-
-**RocketChatApiLatencyHigh (Warning):**
-
-```yaml
-expr: histogram_quantile(0.95, sum by (le, cluster) (rate(http_request_duration_seconds_bucket{job="rocketchat",route=~"/api/.*"}[5m]))) > 0.5
-for: 10m
-severity: warning
-```
-
-**RocketChatApiErrorRateHigh (Critical):**
-
-```yaml
-expr: (sum(rate(http_requests_total{job="rocketchat",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="rocketchat"}[5m]))) > 0.01
-for: 5m
-severity: critical
-```
-
-#### MetalLB Alerts
-
-**MetalLBBgpSessionDown (Critical):**
-
-```yaml
-expr: metallb_bgp_session_up == 0
-for: 1m
-severity: critical
-```
-
-**MetalLBBgpSessionFlapping (Warning):**
-
-```yaml
-expr: changes(metallb_bgp_session_up[5m]) > 4
-for: 5m
-severity: warning
-```
-
-### kube-state-metrics
-
-**Resource Allocation:**
-
-- CPU: 50m request / 500m limit
-- Memory: 100Mi request / 512Mi limit
-
-**Metrics Exposed:**
-
-- Deployment status
-- Pod status
-- Node status
-- ReplicaSet status
-- StatefulSet status
-- DaemonSet status
-- Service status
-- ConfigMap/Secret counts
-
-### node-exporter
-
-**Deployment:** DaemonSet on all nodes
-
-**Resource Allocation:**
-
-- CPU: 50m request / 500m limit
-- Memory: 50Mi request / 512Mi limit
-
-**Metrics Exposed:**
-
-- Node CPU usage
-- Node memory usage
-- Node disk I/O
-- Node network I/O
-- Node filesystem metrics
-
----
-
-## Application Stack
-
-### MongoDB Multi-cluster Architecture
-
-```mermaid
-flowchart TB
-    subgraph cluster_1_Operator["MongoDB Operator - mgmt-cluster"]
-        MongoOp["MongoDB Kubernetes Operator<br/>v1.5.0"]
-        OpConfig["Multi-cluster Configuration"]
-        MongoOp["MongoDB Kubernetes Operator<br/>v1.5.0"]
-        OpConfig["Multi-cluster Configuration"]
-    end
-    subgraph cluster_2_Site_AD_DB["app-cluster-a MongoDB"]
-        Site_AD_RS["ReplicaSet Member 1"]
-        Site_AD_RS["ReplicaSet Member 1"]
-    end
-    subgraph cluster_3_Site_BD_DB["app-cluster-b MongoDB"]
-        Site_BD_RS["ReplicaSet Member 2"]
-        Site_BD_RS["ReplicaSet Member 2"]
-    end
-    subgraph cluster_4_Site_CD_DB["app-cluster-c MongoDB"]
-        Site_CD_RS["ReplicaSet Member 3"]
-        Site_CD_RS["ReplicaSet Member 3"]
-    end
-    subgraph cluster_5_Apps["Application Layer"]
-        RC_Site_A["Rocket.Chat<br/>app-cluster-a"]
-        RC_Site_B["Rocket.Chat<br/>app-cluster-b"]
-        RC_Site_C["Rocket.Chat<br/>app-cluster-c"]
-        RC_Site_A["Rocket.Chat<br/>app-cluster-a"]
-        RC_Site_B["Rocket.Chat<br/>app-cluster-b"]
-        RC_Site_C["Rocket.Chat<br/>app-cluster-c"]
-    end
-    MongoOp -.Manages.-> Site_AD_RS
-    MongoOp -.Manages.-> Site_BD_RS
-    MongoOp -.Manages.-> Site_CD_RS
-    Site_AD_RS <-.Replication.-> Site_BD_RS
-    Site_AD_RS <-.Replication.-> Site_CD_RS
-    Site_BD_RS <-.Replication.-> Site_CD_RS
-    RC_Site_A --> Site_AD_RS
-    RC_Site_B --> Site_BD_RS
-    RC_Site_C --> Site_CD_RS
-    style MongoOp fill:#c8e6c9
-```
-
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-09.svg) | [PNG](../diagrams/png/system-design-document-diagram-09.png)
-
-
-### MongoDB Operator Configuration
-
-**Deployment:**
-
-- Namespace: mongodb-operator (all clusters)
-- Version: 1.5.0
-- Multi-cluster: Enabled
-
-**Multi-cluster Settings:**
-
-```yaml
-clusters: [mgmt-cluster, app-cluster-a, app-cluster-b, app-cluster-c]
-kubeConfigSecretName: mongodb-enterprise-operator-multi-cluster-kubeconfig
-performFailOver: true
-clusterClientTimeout: 10
-needsCAInfrastructure: true
-```
-
-**Operator Resources:**
-
-- CPU: 500m request / 1 core limit
-- Memory: 300Mi request / 1Gi limit
-- Replicas: 1
-
-**Security:**
-
-- managedSecurityContext: false
-- Vault Secret Backend: Disabled
-
-**Watched Resources:**
-
-- opsmanagers
-- mongodb
-- mongodbmulticluster
-- mongodbusers
-
-### MongoDB ReplicaSet
-
-**Configuration:**
-
-- Multi-cluster replication across 3 sites
-- TLS Enabled with CA bundle
-- MongoDB Exporter for Prometheus metrics
-- Persistent storage via Trident
-
-**Connection String:**
-
-```text
-mongodb://[credentials]@mongodb-service?ssl=true&tlsCAFile=/etc/ssl/mongo/ca.pem
-```
-
-### NATS Cluster
-
-**Deployment:**
-
-- Namespace: nats-system
-- Version: 2.12.2
-- Mode: Cluster (3 replicas)
-
-**Cluster Configuration:**
-
-```yaml
-cluster:
-  enabled: true
-  port: 6222
-  replicas: 3
-  useFQDN: true
-```
-
-**TLS Configuration:**
-
-- Client port 4222 uses `nats-client-tls` issued by `platform-ca-clusterissuer`.
-- Cluster route port 6222 uses `nats-cluster-tls` with per-pod StatefulSet DNS SANs.
-- Rocket.Chat uses `tls://nats.nats-system.svc.cluster.local:4222` and mounts `rocketchat-nats-ca-secret` for Node.js CA trust.
-- Client traffic is TLS encrypted with server authentication; client certificate authentication is reserved for a future mTLS hardening pass.
-
-**Monitoring:**
-
-- Port: 8222
-- Prometheus Exporter: Enabled (port 7777, PodMonitor enabled)
-
-**Storage:**
-
-- PVC Enabled: true
-- Size: 1Gi
-- Storage Class: tridentsvm-nfs-latebinding
-
-**Resources:**
-
-- CPU: 100m request / 500m limit
-- Memory: 128Mi request / 360Mi limit
-
-### Rocket.Chat Microservices
-
-```mermaid
-flowchart LR
-    subgraph cluster_1_External["External Access"]
-        Users["Users"]
-        Users["Users"]
-    end
-    subgraph cluster_2_Ingress["Ingress Layer"]
-        Contour["Contour Ingress"]
-        Contour["Contour Ingress"]
-    end
-    subgraph cluster_3_RocketChat["Rocket.Chat Pods"]
-        RC1["Rocket.Chat Pod 1"]
-        RC2["Rocket.Chat Pod 2"]
-        RC3["Rocket.Chat Pod 3"]
-        RC1["Rocket.Chat Pod 1"]
-        RC2["Rocket.Chat Pod 2"]
-        RC3["Rocket.Chat Pod 3"]
-    end
-    subgraph cluster_4_Microservices["Microservice Pods"]
-        Presence1["Presence Service 1"]
-        Presence2["Presence Service 2"]
-        Presence1["Presence Service 1"]
-        Presence2["Presence Service 2"]
-    end
-    subgraph cluster_5_Backend["Backend Services"]
-        MongoDB[("MongoDB<br/>ReplicaSet")]
-        NATS["NATS Cluster"]
-        MongoDB[("MongoDB<br/>ReplicaSet")]
-        NATS["NATS Cluster"]
-    end
-    Users --> Contour
-    Contour --> RC1
-    Contour --> RC2
-    Contour --> RC3
-    RC1 --> Presence1
-    RC2 --> Presence1
-    RC3 --> Presence2
-    RC1 --> MongoDB
-    RC2 --> MongoDB
-    RC3 --> MongoDB
-    Presence1 --> NATS
-    Presence2 --> NATS
-```
-
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-10.svg) | [PNG](../diagrams/png/system-design-document-diagram-10.png)
-
-
-**Deployment:**
-
-- Namespace: rocketchat
-- Version: 7.13.1
-- Replicas: 4 (main), 3 (microservices)
-- Min Available: 4
-
-**Anti-affinity:**
-
-```yaml
-requiredDuringSchedulingIgnoredDuringExecution:
-  topologyKey: kubernetes.io/hostname
-```
-
-**Resources (Main Pods):**
-
-- CPU: 250m request / 2 cores limit
-- Memory: 2Gi request / 4Gi limit
-
-**Resources (Presence Microservice):**
-
-- CPU: 250m request / 500m limit
-- Memory: 512Mi request / 1Gi limit
-
-**MongoDB Integration:**
-
-- External MongoDB: Enabled
-- TLS: Enabled
-- CA Bundle: Mounted at /etc/ssl/mongo
-- Connection managed via Kubernetes Secret
-
-**Monitoring:**
-
-- Metrics Port: HTTP (Prometheus scraping)
-- ServiceMonitor: Configured
-
----
-
-## Deployment Architecture
-
-### Deployment Sequence
-
-```mermaid
-flowchart TB
-    Start(["Start Deployment"])
-    Core["core: DNS, cert-manager, MetalLB, Trident"]
-    Ingress["realms/platform-ingress: platform-ingress + restricted-ingress ingress planes"]
-    Istio["istio: mesh install + multicluster secrets"]
-    Monitoring["monitoring: Grafana PostgreSQL, Prometheus, Alertmanager, Kiali access"]
-    Data["realms/platform-ingress/rocketchat/mongodb: MongoDB platform"]
-    NATS["realms/platform-ingress/rocketchat: NATS"]
-    RocketChat["realms/platform-ingress/rocketchat: Rocket.Chat"]
-    Identity["realms/*/keycloak: Keycloak realms"]
-    Security["stigs/deploy-security-hardening.sh"]
-    OpsTools["misc: Chrony DaemonSet + Toolbox"]
-    Complete(["Deployment Complete"])
-    Start --> Core
-    Core --> Ingress
-    Ingress --> Istio
-    Istio --> Monitoring
-    Monitoring --> Data
-    Data --> NATS
-    NATS --> RocketChat
-    RocketChat --> Identity
-    Identity --> Security
-    Security --> OpsTools
-    OpsTools --> Complete
-    style Start fill:#c8e6c9
-    style Complete fill:#c8e6c9
-    style Istio fill:#e1f5ff
-    style Monitoring fill:#fff9c4
-    style Security fill:#ffcdd2
-```
-
-> Diagram export: [SVG](../diagrams/svg/system-design-document-diagram-11.svg) | [PNG](../diagrams/png/system-design-document-diagram-11.png)
-
-
-### Deployment Scripts
-
-**Main Orchestration:**
-
-- Script template: `build/install/deploy-cluster-template.sh`
-- Parameters: SITE, CLUSTER
-- Base Directory: `/opt/k8s-mystical-mesh/build/install`
-- Notes: copy the template per cluster and call scripts from current subdirectories (`core`, `istio`, `monitoring`, `realms/*`, `stigs`). The detailed rebuild order is in `docs/How-to-deploy-a-K8s-Mystical-Mesh multicluster.md`.
-
-**Deployment Steps:**
-
-| Step | Script | Component | Description |
-| ------ | -------- | ----------- | ------------- |
-| core/00 | `core/00-patch-coredns.sh` | CoreDNS | Apply RKE2 DNS patches |
-| core/01 | `core/01-install-cert-manager.sh` | cert-manager | Install certificate management |
-| core/02 | `core/02-install-metallb.sh` | MetalLB | Install load balancer |
-| core/04-06 | `core/04-06` scripts | Trident | Install and configure Trident + Protect |
-| realms/platform-ingress/01 | `realms/platform-ingress/01-install-platform-ingress-ingress.sh` | Contour | Install standard platform-ingress ingress plane |
-| realms/platform-ingress/02 | `realms/platform-ingress/02-install-platform-ingress-restricted-ingress.sh` | Contour | Install segmented ingress plane |
-| istio/01-04 | `istio/01-04` scripts | Istio | Configure CA, install mesh, configure secrets, verify |
-| monitoring/00-05 | `monitoring/00-05` scripts | Observability | Grafana PostgreSQL, Prometheus, dashboards, rules, Kiali Grafana access |
-| realms/platform-ingress/rocketchat/mongodb | `realms/platform-ingress/rocketchat/mongodb/*.sh` | MongoDB | Multi-cluster database setup |
-| realms/platform-ingress/rocketchat/19 | `realms/platform-ingress/rocketchat/19-install-nats-cluster.sh` | NATS | Install messaging system |
-| realms/platform-ingress/rocketchat/20 | `realms/platform-ingress/rocketchat/20-install-rocketchat.sh` | Rocket.Chat | Install application |
-| realms/*/keycloak | `realms/*/keycloak/*.sh` | Identity | Install Keycloak PostgreSQL, operator, CRs, protection, policies |
-| stigs | `stigs/deploy-security-hardening.sh` | Security | Apply hardening policies last |
-| misc/chrony | `build/misc/chrony/chrony-daemonset.yaml` | Time Sync | Optional host time sync daemonset |
-| misc/toolbox | `build/misc/toolbox/deploy-ultimate-toolbox-v1.sh` | Operations | Optional toolbox deployment for cluster troubleshooting |
-
-### Configuration Management
-
-**Structure:**
-
-```text
-build/sites/
-├── all/                    # Shared configurations
-│   ├── values/             # Common Helm values
-│   └── resources/          # Common K8s resources
-│       └── keycloak-networkpolicies/
-├── site-a/
-│   ├── manager-cluster/    # mgmt-cluster specific
-│   │   ├── values/
-│   │   └── resources/
-│   └── domain-cluster/     # app-cluster-a specific
-│       ├── values/
-│       └── resources/
-├── site-b/
-│   └── domain-cluster/
-│       ├── values/
-│       └── resources/
-└── site-c/
-  ├── domain-cluster/
-  │   ├── values/
-  │   └── resources/
-  └── reference-cluster/
-    ├── values/
-    └── resources/
-```
-
-**Helm Charts:**
-
-- Location: `helm/packages`
-- Format: Packaged .tgz files
-- Registry: registry.example.internal:8443/library
-
----
-
-## Security Best Practices Assessment
-
-### ✅ Current Security Strengths
-
-1. **Certificate and Transport Security:**
-   - ✅ Centralized cert-manager with ClusterIssuer
-   - ✅ Automated certificate lifecycle
-   - ✅ Istio mTLS enabled cluster-wide
-   - ✅ TLS-enabled service paths for critical platform components
-
-2. **STIGS Pod Hardening Controls:**
-   - ✅ Non-root execution configured for hardened workloads
-   - ✅ `allowPrivilegeEscalation: false` for hardened components
-   - ✅ `capabilities.drop: [ALL]` with minimal exceptions (Envoy `NET_BIND_SERVICE`)
-   - ✅ `seccompProfile: RuntimeDefault` configured in hardened values
-
-3. **Network Segmentation Controls:**
-   - ✅ Namespace-specific NetworkPolicies for Rocket.Chat, MongoDB, NATS, Monitoring
-   - ✅ Default-deny policy templates available and automatable
-   - ✅ Namespace label standardization for deterministic policy selectors
-
-4. **RBAC and Supply-Chain Controls:**
-   - ✅ Service accounts across platform components
-   - ✅ Role-based access boundaries with namespace scoping where appropriate
-   - ✅ Private registry usage with pinned versions for core deployments
-
-### ⚠️ Security Gaps and Priorities
-
-#### 1. Pod Security Standards Enforcement Consistency - **HIGH PRIORITY**
-
-**Issue:** Namespace-level PSS enforcement is not uniformly enforced across all operational namespaces.
-
-**Recommendation:** Apply staged enforcement (`warn`/`audit` then `enforce`) per namespace tier:
-
-```yaml
-pod-security.kubernetes.io/enforce: baseline
-pod-security.kubernetes.io/audit: baseline
-pod-security.kubernetes.io/warn: baseline
-```
-
-#### 2. Default-Deny Activation Coverage - **HIGH PRIORITY**
-
-**Issue:** Default-deny policies are optional in the STIG script (Step 9), so posture may differ by cluster/state.
-
-**Recommendation:** Make default-deny mandatory for app namespaces after policy validation and rollout testing.
-
-#### 3. Workload Hardening Parity - **MEDIUM PRIORITY**
-
-**Issue:** Some workload value files (for example selected reference Postgres overlays) still include permissive security settings.
-
-**Recommendation:** Standardize `runAsNonRoot`, seccomp, and capability policies across all charts/overlays.
-
-#### 4. Storage Security - **MEDIUM PRIORITY**
-
-**Issue:** iSCSI backend CHAP hardening is still not enabled.
-
-**Recommendation:** Enable bidirectional CHAP for Trident SAN backends.
-
-#### 5. Secret Management - **MEDIUM PRIORITY**
-
-**Issue:** Sensitive data remains primarily in Kubernetes Secrets.
-
-**Recommendation:** Introduce external secret management (for example Vault integration) for high-value credentials.
-
-#### 6. Quotas and Policy-as-Code - **MEDIUM PRIORITY**
-
-**Issue:** Namespace ResourceQuotas and admission guardrails are not consistently enforced.
-
-**Recommendation:** Add ResourceQuotas/LimitRanges and policy engines (OPA/Gatekeeper or Kyverno) for guardrail enforcement.
-
----
-
-## Recommendations and Improvements
-
-### Security and Monitoring Continuous Improvements - **HIGH PRIORITY**
-
-#### 1. Enforce Namespace PSS as an Operational Baseline
-
-**Current State:** Workload-level controls are implemented, but namespace enforcement remains inconsistent.
-
-**Recommendation:** Roll out baseline PSS (`warn`/`audit` then `enforce`) for application namespaces, then evaluate restricted for compatible workloads.
-
-#### 2. Make Default-Deny NetworkPolicies Standard
-
-**Current State:** Default deny is template-driven and optional at deployment time.
-
-**Recommendation:** Add default-deny rollout to mandatory cluster hardening for application namespaces after validation tests.
-
-#### 3. Complete SecurityContext Parity Across Remaining Workloads
-
-**Current State:** Core platform components are hardened; selected overlay values still require normalization.
-
-**Recommendation:** Align all workload charts with the STIG baseline:
-
-- `runAsNonRoot: true`
-- `allowPrivilegeEscalation: false`
-- `capabilities.drop: [ALL]`
-- `seccompProfile.type: RuntimeDefault`
-
-#### 4. Improve Security Observability and Drift Detection
-
-**Recommendation:** Add automated conformance checks (CI or periodic jobs) that verify:
-
-- required pod/container security context keys exist
-- required NetworkPolicies exist per namespace
-- namespace labels for selector matching remain intact
-
-#### 5. Expand Alert Coverage for Security-Relevant Conditions
-
-**Recommendation:** Add and tune alerts for certificate expiry, policy drift, and unexpected privileged settings.
-
-Example alert candidates:
-
-```yaml
-# Istio Alerts
-- alert: IstioCertificateExpiringSoon
-  expr: (istio_cert_expiration_timestamp - time()) < 86400 * 30
-  for: 1h
-  severity: warning
-
-- alert: IstioGatewayDown
-  expr: up{job="istio-eastwestgateway"} == 0
-  for: 5m
-  severity: critical
-
-# Storage Alerts
-- alert: PersistentVolumeNearFull
-  expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes > 0.85
-  for: 10m
-  severity: warning
-
-# NATS Alerts
-- alert: NATSSlowConsumer
-  expr: nats_slow_consumers > 0
-  for: 5m
-  severity: warning
-
-- alert: NATSHighLatency
-  expr: nats_latency_seconds > 1
-  for: 10m
-  severity: warning
-```
-
-### Performance Optimizations
-
-#### 1. Resource Right-sizing
-
-**Recommendation:** Review and adjust resource allocations based on actual usage:
-
-```yaml
-# Example: Increase Prometheus based on metrics volume
-prometheus:
-  prometheusSpec:
-    resources:
-      requests:
-        cpu: 2          # Increase from 1
-        memory: 8Gi     # Increase from 4Gi
-      limits:
-        memory: 16Gi    # Increase from 12Gi
-    storageSpec:
-      volumeClaimTemplate:
-        spec:
-          resources:
-            requests:
-              storage: 200Gi  # Increase from 150Gi
-```
-
-#### 2. Enable Prometheus Remote Write for Federation
-
-**Current:** Using remote write receiver but not optimized
-
-**Recommendation:** Configure remote write with proper settings:
-
-```yaml
-# Domain clusters should remote write to manager
-remoteWrite:
-- url: https://prometheus-rw.platform.example.internal/api/v1/write
-  queueConfig:
-    capacity: 10000
-    maxShards: 50
-    minShards: 1
-    maxSamplesPerSend: 5000
-    batchSendDeadline: 5s
-    minBackoff: 30ms
-    maxBackoff: 100ms
-  writeRelabelConfigs:
-  - sourceLabels: [__name__]
-    regex: 'up|node_.*|kube_.*|mongodb_.*|rocketchat_.*'
-    action: keep
-```
-
-#### 3. Optimize Istio Proxy Resources
-
-**Current:** Static resource allocation for all proxies
-
-**Recommendation:** Implement resource annotations per workload:
-
-```yaml
-# High-traffic workloads (Rocket.Chat)
-annotations:
-  sidecar.istio.io/proxyCPU: "200m"
-  sidecar.istio.io/proxyMemory: "256Mi"
-  sidecar.istio.io/proxyCPULimit: "2000m"
-  sidecar.istio.io/proxyMemoryLimit: "1Gi"
-
-# Low-traffic workloads (MongoDB operator)
-annotations:
-  sidecar.istio.io/proxyCPU: "50m"
-  sidecar.istio.io/proxyMemory: "64Mi"
-  sidecar.istio.io/proxyCPULimit: "500m"
-  sidecar.istio.io/proxyMemoryLimit: "256Mi"
-```
-
-### High Availability Improvements
-
-#### 1. Increase Prometheus Replicas
-
-**Current:** Single replica
-
-**Recommendation:**
-
-```yaml
-prometheus:
-  prometheusSpec:
-    replicas: 2
-    replicaExternalLabelName: "__replica__"
-```
-
-#### 2. Alertmanager Clustering
-
-**Current:** Single replica
-
-**Recommendation:**
-
-```yaml
-alertmanager:
-  alertmanagerSpec:
-    replicas: 3
-    storage:
-      volumeClaimTemplate:
-        spec:
-          storageClassName: tkg-work-storage-iscsi-latebinding
-          resources:
-            requests:
-              storage: 120Gi
-```
-
-#### 3. MongoDB Topology Awareness
-
-**Recommendation:** Configure MongoDB for multi-cluster awareness:
-
-```yaml
-spec:
-  topology:
-    - members: 1
-      name: app-cluster-a
-      priority: 1.0
-    - members: 1
-      name: app-cluster-b
-      priority: 0.9
-    - members: 1
-      name: app-cluster-c
-      priority: 0.8
-  automationConfig:
-    replicaSet:
-      settings:
-        chainingAllowed: true
-        heartbeatTimeoutSecs: 10
-        electionTimeoutMillis: 10000
-```
-
-### Disaster Recovery
-
-#### 1. Backup Strategy
-
-**Recommendation:** Implement Trident Protect for backup:
-
-**Backup Schedule:**
-
-```yaml
-apiVersion: Trident Protect.io/v1
-kind: Schedule
-metadata:
-  name: daily-backup
-spec:
-  schedule: "0 2 * * *"  # 2 AM daily
-  template:
-    includedNamespaces:
-    - rocketchat
-    - mongodb
-    - istio-system
-    - monitoring
-    ttl: 720h0m0s  # 30 days
-    storageLocation: default
-    volumeSnapshotLocations:
-    - default
-```
-
-#### 2. MongoDB Backup
-
-**Recommendation:** Configure MongoDB Ops Manager backups or use MongoDB Enterprise Backup:
-
-```yaml
-spec:
-  backup:
-    mode: ops-manager
-    snapshotSchedule:
-      snapshotIntervalHours: 6
-      snapshotRetentionDays: 30
-    encryption:
-      kmip:
-        enabled: false
+sum(rate(container_cpu_usage_seconds_total{pod!=""}[5m])) by (pod, namespace)
+sum(container_memory_working_set_bytes{pod!=""}) by (pod, namespace)
+sum(kube_pod_container_status_restarts_total) by (namespace, pod)
+(kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100
+mongodb_mongod_replset_member_replication_lag
+rate(nats_varz_in_msgs[5m])
+sum(rate(istio_requests_total[5m])) by (source_workload, destination_workload)
 ```
 
 ---
 
-## Appendices
+## Emergency and Recovery Procedures
 
-### Appendix A: Network Ports Reference
+### Complete Cluster Failure
 
-| Service | Port | Protocol | Purpose |
-| --------- | ------ | ---------- | --------- |
-| Istio East-West Gateway | 15443 | TCP | Cross-cluster mTLS |
-| Istio Pilot | 15010 | TCP | xDS and CA services |
-| Istio Pilot | 15012 | TCP | XDS and CA services (TLS) |
-| Envoy Prometheus | 15020 | TCP | Metrics |
-| MongoDB | 27017 | TCP | Database connections |
-| NATS Client | 4222 | TCP | Client connections |
-| NATS Cluster | 6222 | TCP | Cluster routing |
-| NATS Monitoring | 8222 | TCP | Monitoring |
-| Prometheus | 9090 | TCP | Query/API |
-| Grafana | 3000 | TCP | Web UI |
-| Alertmanager | 9093 | TCP | Alerts |
+1. Check infrastructure reachability and API status.
+2. Check control-plane pods and logs.
+3. Check etcd health.
+4. Validate storage and registry dependencies.
+5. Restore from backup if control-plane or stateful recovery is required.
 
-### Appendix B: Resource Requirements Summary
-
-| Cluster | CPU Request | CPU Limit | Memory Request | Memory Limit | Storage |
-| --------- | ------------- | ----------- | ---------------- | -------------- | --------- |
-| mgmt-cluster | ~5 cores | ~15 cores | ~10Gi | ~25Gi | 300Gi+ |
-| app-cluster-a | ~3 cores | ~10 cores | ~6Gi | ~15Gi | 120Gi+ |
-| app-cluster-b | ~3 cores | ~10 cores | ~6Gi | ~15Gi | 120Gi+ |
-| app-cluster-c | ~3 cores | ~10 cores | ~6Gi | ~15Gi | 120Gi+ |
-
-### Appendix C: DNS Records Required
-
-```text
-# Service mesh gateways
-mgmt-cluster-eastwest.istio-system.svc.cluster.local
-app-cluster-a-eastwest.istio-system.svc.cluster.local
-app-cluster-b-eastwest.istio-system.svc.cluster.local
-app-cluster-c-eastwest.istio-system.svc.cluster.local
-
-# Storage
-storage.example.internal
-storage-data.example.internal
-
-# Container registry
-registry.example.internal
-
-# Applications
-rocket.platform.example.internal
-grafana.platform.example.internal
+```bash
+kubectl cluster-info
+kubectl get nodes
+kubectl get pods -n kube-system
+kubectl logs -n kube-system -l component=kube-apiserver
+kubectl get pods -n kube-system -l component=etcd
 ```
 
-### Appendix D: Kubernetes Contexts
+### Service Degradation
 
-```yaml
-contexts:
-- name: mgmt-cluster
-  cluster: mgmt-cluster-api
-  
-- name: app-cluster-a
-  cluster: app-cluster-a-api
-  
-- name: app-cluster-b
-  cluster: app-cluster-b-api
-  
-- name: app-cluster-c
-  cluster: app-cluster-c-api
+1. Identify failing pods and recent events.
+2. Check node and pod resource constraints.
+3. Scale replicated workloads if capacity exists.
+4. Restart stuck pods only after dependency checks.
+
+```bash
+kubectl get pods -A | grep -v Running
+kubectl get events -A --sort-by='.lastTimestamp' | tail -20
+kubectl top nodes
+kubectl describe node <node-name>
 ```
 
-### Appendix E: Security Checklist
+### Data Loss Prevention
 
-- [x] Implement NetworkPolicies for Rocket.Chat, MongoDB, NATS, and Monitoring
-- [x] Apply pod/container security contexts to NATS, Contour/Envoy, and Prometheus stack
-- [x] Provide default-deny policy templates for application namespaces
-- [ ] Enforce baseline Pod Security Standards consistently across operational namespaces
-- [ ] Enable CHAP for iSCSI storage backend
-- [ ] Implement ResourceQuotas per namespace
-- [ ] Configure SSO integration with Keycloak
-- [ ] Enable Vault integration for secrets
-- [ ] Implement OPA/Gatekeeper policies
-- [ ] Regular security scanning of container images
-- [ ] Rotate TLS certificates before expiration
-- [ ] Enable audit logging for API server
-- [ ] Implement pod security policies/admission controllers
-- [ ] Review and audit RBAC permissions quarterly
+1. Take an immediate backup/snapshot where possible.
+2. Prevent further writes if data consistency is at risk.
+3. Investigate before restoring.
+4. Validate restored application, database, and ingress paths.
 
-### Appendix F: Node Inventory
+For single-node clusters, recovery planning is mandatory because host loss, OS corruption, disk failure, and local PV loss all share the same failure domain.
 
-Complete inventory of all cluster nodes with multi-homed network configuration.
+### Escalation Criteria
 
-#### mgmt-cluster Cluster (Site A)
-
-| Hostname | platform-net | storage-net | restricted-ingress | Role |
-| ---------- | -------------- | ------------- | ---------- | ------ |
-| **mgmt-cluster-api** | - | - | - | Cluster VIP |
-| mgmt-cluster-ctrl01 | 192.0.2.10 | 203.0.113.10 | 192.0.2.110 | Control Plane |
-| mgmt-cluster-ctrl02 | 192.0.2.11 | 203.0.113.11 | 192.0.2.111 | Control Plane |
-| mgmt-cluster-ctrl03 | 192.0.2.12 | 203.0.113.12 | 192.0.2.112 | Control Plane |
-| mgmt-cluster-spare | 192.0.2.13 | 203.0.113.13 | 192.0.2.113 | Spare Node |
-| mgmt-cluster-work01 | 192.0.2.14 | 203.0.113.14 | 192.0.2.114 | Worker Node |
-| mgmt-cluster-work02 | 192.0.2.15 | 203.0.113.15 | 192.0.2.115 | Worker Node |
-| mgmt-cluster-work03 | 192.0.2.16 | 203.0.113.16 | 192.0.2.116 | Worker Node |
-| mgmt-cluster-work04 | 192.0.2.17 | 203.0.113.17 | 192.0.2.117 | Worker Node |
-
-**Total:** 3 control plane + 4 worker + 1 spare = 8 nodes
-
-#### app-cluster-a Cluster (Site A)
-
-| Hostname | platform-net | storage-net | restricted-ingress | Role |
-| ---------- | -------------- | ------------- | ---------- | ------ |
-| **app-cluster-a-api** | - | - | - | Cluster VIP |
-| app-cluster-a-ctrl01 | 192.0.2.20 | 203.0.113.20 | 192.0.2.120 | Control Plane |
-| app-cluster-a-ctrl02 | 192.0.2.21 | 203.0.113.21 | 192.0.2.121 | Control Plane |
-| app-cluster-a-ctrl03 | 192.0.2.22 | 203.0.113.22 | 192.0.2.122 | Control Plane |
-| app-cluster-a-spare | 192.0.2.23 | 203.0.113.23 | 192.0.2.123 | Spare Node |
-| app-cluster-a-work01 | 192.0.2.24 | 203.0.113.24 | 192.0.2.124 | Worker Node |
-| app-cluster-a-work02 | 192.0.2.25 | 203.0.113.25 | 192.0.2.125 | Worker Node |
-| app-cluster-a-work03 | 192.0.2.26 | 203.0.113.26 | 192.0.2.126 | Worker Node |
-
-**Total:** 3 control plane + 3 worker + 1 spare = 7 nodes
-
-#### app-cluster-b Cluster (Site B)
-
-| Hostname | platform-net | storage-net | restricted-ingress | Role |
-| ---------- | -------------- | ------------- | ---------- | ------ |
-| **app-cluster-b-api** | - | - | - | Cluster VIP |
-| app-cluster-b-ctrl01 | 192.0.2.30 | 203.0.113.30 | 192.0.2.130 | Control Plane |
-| app-cluster-b-ctrl02 | 192.0.2.31 | 203.0.113.31 | 192.0.2.131 | Control Plane |
-| app-cluster-b-ctrl03 | 192.0.2.32 | 203.0.113.32 | 192.0.2.132 | Control Plane |
-| app-cluster-b-spare | 192.0.2.33 | 203.0.113.33 | 192.0.2.133 | Spare Node |
-| app-cluster-b-work01 | 192.0.2.34 | 203.0.113.34 | 192.0.2.134 | Worker Node |
-| app-cluster-b-work02 | 192.0.2.35 | 203.0.113.35 | 192.0.2.135 | Worker Node |
-| app-cluster-b-work03 | 192.0.2.36 | 203.0.113.36 | 192.0.2.136 | Worker Node |
-
-**Total:** 3 control plane + 3 worker + 1 spare = 7 nodes
-
-#### app-cluster-c Cluster (Site C)
-
-| Hostname | platform-net | storage-net | restricted-ingress | Role |
-| ---------- | -------------- | ------------- | ---------- | ------ |
-| **app-cluster-c-api** | - | - | - | Cluster VIP |
-| app-cluster-c-ctrl01 | 192.0.2.40 | 203.0.113.40 | 192.0.2.140 | Control Plane |
-| app-cluster-c-ctrl02 | 192.0.2.41 | 203.0.113.41 | 192.0.2.141 | Control Plane |
-| app-cluster-c-ctrl03 | 192.0.2.42 | 203.0.113.42 | 192.0.2.142 | Control Plane |
-| app-cluster-c-spare | 192.0.2.43 | 203.0.113.43 | 192.0.2.143 | Spare Node |
-| app-cluster-c-work01 | 192.0.2.44 | 203.0.113.44 | 192.0.2.144 | Worker Node |
-| app-cluster-c-work02 | 192.0.2.45 | 203.0.113.45 | 192.0.2.145 | Worker Node |
-| app-cluster-c-work03 | 192.0.2.46 | 203.0.113.46 | 192.0.2.146 | Worker Node |
-
-**Total:** 3 control plane + 3 worker + 1 spare = 7 nodes
-
-**Grand Total:** 29 nodes across 4 clusters
-
-**Network Interface Summary:**
-
-- Each node has 3 network interfaces (platform-net, storage-net, restricted-ingress)
-- platform-net: Primary management and services (192.0.2.x/24)
-- storage-net: Dedicated storage network for iSCSI (203.0.113.x)
-- restricted-ingress: Alternative network for redundancy (198.51.100.x/25)
-
-For complete network details, see [Network-IP-Matrix.md](Network-IP-Matrix.md).
+| Escalation | Trigger |
+| --- | --- |
+| L1 to L2 | Service down more than 15 minutes, data inconsistency suspected, security incident suspected, repeated restart failures |
+| L2 to L3 | Multi-cluster failure, confirmed data loss, confirmed breach, architecture change needed |
 
 ---
 
-**Last Updated:** May 22, 2026
+## Recommendations and Backlog
 
-## May 22, 2026 Version 1.5 Architecture Addendum
+### Documentation Backlog
 
-### Ingress Segmentation
+- Add a future `Single-Multi-Node-Cluster-Reference` section inside this SDD if the single-cluster production pattern becomes a first-class build target.
+- Add deeper backup and restore standards by cluster category.
+- Add Rancher RBAC group mapping once real enterprise group names are approved for private docs.
+- Regenerate diagram exports from the consolidated SDD and portfolio document.
 
-The current design separates ingress into two planes:
+### Technical Backlog
 
-- `platform-ingress`: standard platform, shared management, platform, and developer-access ingress.
-- `restricted-ingress`: segmented ingress for constrained workload paths and higher-risk test exposure.
+1. Enforce Pod Security Admission labels instead of leaving them as commented guidance.
+2. Codify mesh-wide strict mTLS with namespace-specific exceptions.
+3. Add default-deny policies to both ingress namespaces.
+4. Add explicit Envoy-to-backend allow lists.
+5. Add PostgreSQL exporter coverage.
+6. Enable MongoDB database/member metrics with proper credentials.
+7. Add Alertmanager receivers and test routing.
+8. Add Prometheus cardinality dashboards and alerts.
+9. Formalize single-node backup and rebuild testing before stateful workload promotion.
 
-The operational requirement is simple: `platform-ingress` may be default, `restricted-ingress` may not. Any route that belongs on `restricted-ingress` must explicitly declare the `restricted-ingress` ingress class. This keeps application exposure deterministic and prevents a default-class accident from crossing security boundaries.
+---
 
-### Monitoring and Kiali Integration
+## Appendix: Consolidated Source Map
 
-The observability design uses `mgmt-cluster` as the central monitoring cluster. Prometheus Agents on all four clusters remote-write into the central Prometheus server. Grafana and Alertmanager run centrally. Grafana stores application configuration in PostgreSQL, while Prometheus and Alertmanager keep their native persistent storage models.
+This SDD consolidates the content previously spread across these Markdown files:
 
-Kiali instances on all clusters integrate with central monitoring through routable HTTPS endpoints rather than Kubernetes `.svc` names. This is the correct multi-cluster boundary: Kubernetes service DNS is cluster-local unless an explicit multi-cluster service discovery layer is deployed.
+| Previous Document | Integrated Into |
+| --- | --- |
+| `docs/Air-Gap-Image-Supply-Chain.md` | Air-Gapped Image Supply Chain |
+| `docs/RKE2-Distribution-Architecture.md` | RKE2 Distribution and Node Lifecycle |
+| `docs/Operations-Quick-Reference.md` | Operations and Validation; Emergency and Recovery Procedures |
+| `docs/Network-IP-Matrix.md` | Cluster Topology; Network and Ingress Architecture |
+| `docs/Configuration-Baseline.md` | Configuration and Resource Baseline; Security; Monitoring; Scheduling |
+| `docs/Resource-and-Performance-Review.md` | Monitoring and Observability; Configuration and Resource Baseline; Recommendations |
+| `docs/Ingress-Segmentation-Design.md` | Network and Ingress Architecture |
+| `docs/Istio-Sidecar-and-Metrics-Design.md` | Service Mesh Architecture; Monitoring and Observability |
+| `docs/Scheduler-and-Disruption-Policy-Review.md` | Scheduling and Disruption Policy |
+| `docs/Security-Implementation-Summary.md` | Security Architecture; Operations and Validation |
+| `docs/Rancher-Enterprise-Cluster-Management.md` | Rancher Enterprise Management |
+| `docs/Single-Node-Cluster-Reference.md` | Cluster Portfolio Model; Storage; Emergency and Recovery |
+| `docs/README.md` | Repository README and this SDD |
 
-
-### Scheduler and Disruption Controls
-
-Version 1.5 adds explicit scheduler and disruption-policy governance. Replicated stateless workloads use soft spreading and drain-safe disruption budgets. Single-replica stateful services deliberately avoid PDBs because blocking voluntary eviction on a singleton does not create availability; it only blocks maintenance.
-
-Key operating rules:
-
-- Prefer topology spread and soft anti-affinity for scalable stateless services.
-- Use hard anti-affinity only where co-location creates a material blast-radius problem.
-- Use `maxUnavailable: 1` for replicated services that can safely tolerate one voluntary disruption.
-- Do not add PDBs to singletons unless there is a real HA design behind them.
-
-See `docs/Scheduler-and-Disruption-Policy-Review.md`.
-
-### Resource and Performance Posture
-
-The current baseline favors predictable scheduling and controlled failure modes:
-
-- Direct workload manifests include CPU/memory requests and limits.
-- Init containers that touch host state or truststores are bounded.
-- Prometheus central storage includes both retention time and retention size.
-- PostgreSQL debug logging is disabled for normal operations.
-- Custom dashboard discovery and noisy metrics paths are constrained.
-
-
-## Istio sidecar and metrics design
-
-Sidecars are now intentionally applied to application workloads, not platform namespaces. See `docs/Istio-Sidecar-and-Metrics-Design.md` for the current target state and validation commands.
+`docs/Cluster-Portfolio-Strategy.md` remains as the concise portfolio decision guide and should be kept in sync with this SDD.
